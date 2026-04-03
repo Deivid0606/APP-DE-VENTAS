@@ -353,9 +353,11 @@ async function dispatch(fn, args) {
     async setClientCityPrice(token, city, priceGs) {
       const user = await requireUser(token);
       requireRole(user, ['ADMIN', 'PROVEEDOR']);
+      city = String(city || '').trim();
+      if (!city) throw new Error('Ciudad obligatoria');
       const row = { city, price_gs: Number(priceGs || 0) };
       await supabase.from('client_city_prices').upsert(row, { onConflict: 'city' }).throwOnError();
-      return { ok: true };
+      return { ok: true, city, price_gs: row.price_gs };
     },
 
     async addOrder(token, order) {
@@ -689,8 +691,11 @@ async function dispatch(fn, args) {
     async setDeliveryRate(token, email, city, rateGs) {
       const user = await requireUser(token);
       requireRole(user, ['ADMIN', 'PROVEEDOR']);
-      await supabase.from('delivery_rates').upsert({ email: norm(email), city, rate_gs: Number(rateGs || 0) }, { onConflict: 'email,city' }).throwOnError();
-      return { ok: true };
+      email = norm(email);
+      city = String(city || '').trim();
+      if (!email || !city) throw new Error('Email y ciudad son obligatorios');
+      await supabase.from('delivery_rates').upsert({ email, city, rate_gs: Number(rateGs || 0) }, { onConflict: 'email,city' }).throwOnError();
+      return { ok: true, email, city, rate_gs: Number(rateGs || 0) };
     },
 
     async getDeliveryProfit(token, fromISO = '', toISO = '') {
