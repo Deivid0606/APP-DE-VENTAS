@@ -33,11 +33,19 @@
 
         return async (...args) => {
           try {
-            const r = await fetch("/api/gas", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ fn: String(prop), args })
-            });
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+            let r;
+            try {
+              r = await fetch("/api/gas", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ fn: String(prop), args }),
+                signal: controller.signal
+              });
+            } finally {
+              clearTimeout(timeout);
+            }
 
             const data = await r.json();
 
@@ -3140,6 +3148,11 @@
   // sello de última actualización
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
+function cityEq(a,b){ return String(a||'').trim().toLowerCase()===String(b||'').trim().toLowerCase(); }
+function getClientCityPrice(city){
+  const found=(clientCityPrices||[]).find(c=>cityEq(c.city, city));
+  return found?Number(c.price_gs || c.price || 0):0;
+}
   window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} } });
 
@@ -4614,11 +4627,19 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok=localStorage.getItem(tokenKey);
     const current = (document.getElementById('o_city')?.value || '').trim();
     google.script.run.withSuccessHandler(rows=>{
-      clientCityPrices = Array.isArray(rows) ? rows : [];
+      const clean = Array.isArray(rows) ? rows.filter(r=>String(r.city||'').trim()) : [];
+      const seen = new Set();
+      clientCityPrices = clean.filter(r=>{
+        const key = String(r.city||'').trim().toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).sort((a,b)=>String(a.city||'').localeCompare(String(b.city||''), 'es', { sensitivity:'base' }));
       const sel = document.getElementById('o_city');
       if (!sel) return;
       sel.innerHTML = '<option value="">Selecciona ciudad…</option>' + clientCityPrices.map(r=>`<option value="${String(r.city||'').trim()}">${String(r.city||'').trim()}</option>`).join('');
       if (current) sel.value = current;
+      try { recalcOrder(); } catch(_e) {}
     }).withFailureHandler(e=>console.error('Error ciudades:', e)).getDeliveryClientPrices(tok);
   }
 
@@ -4691,10 +4712,10 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city=(o_city.value||'').trim();
-    const found=(clientCityPrices||[]).find(c=>String(c.city||'').toLowerCase()===city.toLowerCase());
-    const del=found?Number(found.price||0):0;
+    const del=getClientCityPrice(city);
     cityHint.textContent = del?`Delivery cobrado: ${nf(del)} Gs`:'';
-    o_total.value=nf(totalVenta); o_delivery.value=nf(del);
+    o_total.value=nf(totalVenta);
+    o_delivery.value=nf(del);
     o_commission.value = nf(totalVenta - (totalProv + del));
   }
 
@@ -4757,10 +4778,13 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function onShowView(name){
+    if (name !== 'chat') { try { stopChatPolling(); } catch(_e) {} }
+    if (name !== 'mapa') { try { stopMapPolling(); } catch(_e) {} }
     if (name === 'order') {
       try { buildCityDropdown(); } catch(_e) {}
       ensureOrderFormReady();
       setTimeout(()=>{ try { buildCityDropdown(); } catch(_e) {} }, 250);
+      setTimeout(()=>{ try { recalcOrder(); } catch(_e) {} }, 350);
     }
     if (name === 'products') {
       loadCatalog();
@@ -4768,6 +4792,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (name === 'rates') {
       try { loadRates(); } catch(_e) {}
       try { loadClientPrices(); } catch(_e) {}
+      setTimeout(()=>{ try { buildCityDropdown(); } catch(_e) {} }, 150);
     }
   }
 
@@ -5554,7 +5579,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const city = (cp_city.value||'').trim(); const price = Number(cp_price.value||0);
     if (!city || price<=0){ toast('Ciudad y precio son obligatorios'); return; }
-    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
+    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); setTimeout(()=>{ try { buildCityDropdown(); recalcOrder(); } catch(_e) {} }, 250); })
       .withFailureHandler(e=>toast(e.message||e))
       .setClientCityPrice(tok, city, price);
   }
