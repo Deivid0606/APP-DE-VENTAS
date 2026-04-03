@@ -1444,7 +1444,7 @@
     <button id="navAssign" class="btn hidden" onclick="show('assignOrders'); loadAssignableOrders()">Asignar Pedidos</button>
     <button id="navMap" class="btn hidden" onclick="show('mapa'); openMapaView()">Mapa</button>
    
-    <button id="navRates" class="btn hidden" onclick="show('rates'); loadRates(); loadClientPrices();">Costos delivery</button>
+    <button id="navRates" class="btn hidden" onclick="show('rates')">Costos delivery</button>
    
     <!-- === MODIFICADO: Ahora PROVEEDOR también ve Pago de comisiones === -->
     <button id="navComms" class="btn hidden" onclick="show('commissions'); openCommissionsView()">Pago de comisiones</button>
@@ -3133,16 +3133,15 @@
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
     if (name !== 'chat') stopChatPolling();
+    if (name !== 'mapa') stopMapPolling();
     try { onShowView(name); } catch(_e) {}
   };
 
   // sello de última actualización
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
-  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} });
-  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} });
-  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} } });
-  window.addEventListener('load', ()=>{ try { stopChatPolling(); } catch(_e) {} });
+  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
+  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} } });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3702,6 +3701,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     try { if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; } } catch(_e) {}
   }
 
+  function stopMapPolling(){
+    try { if (liveMapRefreshTimer){ clearInterval(liveMapRefreshTimer); liveMapRefreshTimer = null; } } catch(_e) {}
+    try { stopDeliveryGeolocation(); } catch(_e) {}
+  }
+
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
     b = String(b||'').trim().toLowerCase();
@@ -3972,6 +3976,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     refreshWallet();
     loadRates();
     loadClientPrices();
+    try { buildCityDropdown(); } catch(_e) {}
     if (!document.getElementById('view-earnings')?.classList.contains('hidden')) loadEarnings();
 
     // === NUEVO: re-render vista Pedidos con guías
@@ -4607,10 +4612,14 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // =========================
   function buildCityDropdown(){
     const tok=localStorage.getItem(tokenKey);
+    const current = (document.getElementById('o_city')?.value || '').trim();
     google.script.run.withSuccessHandler(rows=>{
-      clientCityPrices=rows||[];
-      const sel=o_city; sel.innerHTML='<option value="">Selecciona ciudad…</option>'+rows.map(r=>`<option>${r.city}</option>`).join('');
-    }).getDeliveryClientPrices(tok);
+      clientCityPrices = Array.isArray(rows) ? rows : [];
+      const sel = document.getElementById('o_city');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Selecciona ciudad…</option>' + clientCityPrices.map(r=>`<option value="${String(r.city||'').trim()}">${String(r.city||'').trim()}</option>`).join('');
+      if (current) sel.value = current;
+    }).withFailureHandler(e=>console.error('Error ciudades:', e)).getDeliveryClientPrices(tok);
   }
 
   // =========================
@@ -4734,6 +4743,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function ensureOrderFormReady(){
     const box = document.getElementById('itemsBox');
     if (!box) return;
+    try { if (!document.getElementById('o_city')?.options?.length) buildCityDropdown(); } catch(_e) {}
 
     if (pendingOrderPrefill && pendingOrderPrefill.sku) {
       ensureCatalogReady(()=>prefillOrderWithSingleProduct(pendingOrderPrefill));
@@ -4748,7 +4758,9 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
   function onShowView(name){
     if (name === 'order') {
+      try { buildCityDropdown(); } catch(_e) {}
       ensureOrderFormReady();
+      setTimeout(()=>{ try { buildCityDropdown(); } catch(_e) {} }, 250);
     }
     if (name === 'products') {
       loadCatalog();
@@ -5542,7 +5554,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const city = (cp_city.value||'').trim(); const price = Number(cp_price.value||0);
     if (!city || price<=0){ toast('Ciudad y precio son obligatorios'); return; }
-    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; try { loadClientPrices(); } catch(_e) {} ; try { buildCityDropdown(); } catch(_e) {} ; setTimeout(()=>{ try { loadClientPrices(); } catch(_e) {} }, 300); })
+    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
       .withFailureHandler(e=>toast(e.message||e))
       .setClientCityPrice(tok, city, price);
   }
