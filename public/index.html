@@ -3236,15 +3236,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     else localStorage.removeItem(emailKey);
 
     google.script.run.withSuccessHandler(res=>{
-        const token = res?.session?.token || res?.result?.session?.token || '';
-        if (!token){
-          console.error('Respuesta inesperada en login:', res);
-          toast('Login respondió sin token');
-          return;
-        }
-        localStorage.setItem(tokenKey, token);
-        const user = res?.user || res?.result?.user || null;
-        if (user) me = user;
+        localStorage.setItem(tokenKey, res.session.token);
         init();
       })
       .withFailureHandler(e=>toast(e.message||e))
@@ -3303,11 +3295,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function init(){
     const tok=localStorage.getItem(tokenKey);
     google.script.run.withSuccessHandler(res=>{
-      const payload = res?.result || res || {};
-      const authenticated = payload?.authenticated ?? !!payload?.user;
-      const currentUser = payload?.user || (payload?.email ? payload : null);
-      if (!authenticated || !currentUser){ openLogin(); return; }
-      me=currentUser; setUserBoxUI(me); setNavForAuth(true, me.role);
+      if (!res.authenticated){ openLogin(); return; }
+      me=res.user; setUserBoxUI(me); setNavForAuth(true, me.role);
       document.getElementById('roleChip').textContent = me.role;
 
       installGlobalButtonFeedback();
@@ -4016,6 +4005,15 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }catch(_e){}
   }
 
+
+  function clearCatalogCache(){
+    products = [];
+    catalogMap = {};
+    catalogLoadedAt = 0;
+    catalogLoadPromise = null;
+    try{ localStorage.removeItem(getCatalogCacheKey()); }catch(_e){}
+  }
+
   function applyCatalogRows(rows, opts){
     opts = opts || {};
     products = Array.isArray(rows) ? rows.slice() : [];
@@ -4539,7 +4537,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     google.script.run.withSuccessHandler(()=>{
       toast('Producto actualizado');
       closeEditProductModal();
-      loadCatalog();
+      clearCatalogCache();
+      loadCatalog(true);
     }).withFailureHandler(e=>toast(e.message||e)).updateProduct(tok, productId, data);
   }
 
@@ -4549,7 +4548,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok=localStorage.getItem(tokenKey);
     google.script.run.withSuccessHandler(()=>{
       toast('Producto eliminado');
-      loadCatalog();
+      clearCatalogCache();
+      loadCatalog(true);
     }).withFailureHandler(e=>toast(e.message||e)).deleteProduct(tok, productId);
   }
 
@@ -4594,7 +4594,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     google.script.run
       .withSuccessHandler(() => {
         toast('Producto guardado');
-        loadCatalog();
+        clearCatalogCache();
+        loadCatalog(true);
         document.getElementById('addProductBox').classList.add('hidden');
         ['np_title','np_sku','np_price','np_real_cost','np_stock','np_real_stock','np_img','np_img2','np_img3','np_description','np_provider_email','np_private_to']
           .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
@@ -5925,9 +5926,8 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     google.script.run
       .withSuccessHandler(res=>{
         toast('Contraseña actualizada');
-        const token = res?.session?.token || res?.result?.session?.token || '';
-        if (token){
-          localStorage.setItem(tokenKey, token);
+        if (res?.session?.token){
+          localStorage.setItem(tokenKey, res.session.token);
           closeResetSet();
           init();
         } else {
