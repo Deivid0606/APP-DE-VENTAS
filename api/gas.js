@@ -317,13 +317,21 @@ async function dispatch(fn, args) {
 
     async listProducts(token) {
       const user = await requireUser(token);
+      const role = String(user.role || '').trim().toUpperCase();
+      const myEmail = norm(user.email);
       const { data, error } = await supabase.from('products').select('*').eq('is_active', true).order('created_at', { ascending: false });
       if (error) throw error;
-      const rows = (data || []).filter((p) => {
-        if (user.role === 'PROVEEDOR') return p.provider_email === user.email;
-        if (!p.vendor_private_to) return true;
-        const emails = p.vendor_private_to.split(',').map(norm).filter(Boolean);
-        return user.role === 'ADMIN' || emails.includes(user.email);
+      const rows = (data || []).map((p) => ({
+        ...p,
+        provider_email: norm(p.provider_email || ''),
+        private_to_emails: String(p.private_to_emails || p.vendor_private_to || '').trim(),
+        vendor_private_to: String(p.vendor_private_to || p.private_to_emails || '').trim(),
+        provider_name: p.provider_name || p.provider_email || ''
+      })).filter((p) => {
+        const allowed = String(p.private_to_emails || '').split(',').map(norm).filter(Boolean);
+        if (role === 'PROVEEDOR') return norm(p.provider_email) === myEmail;
+        if (role === 'ADMIN' || role === 'DESPACHANTE') return true;
+        return !allowed.length || allowed.includes(myEmail);
       });
       return rows;
     },
@@ -986,9 +994,10 @@ async function dispatch(fn, args) {
     },
 
     async debugProducts(token) {
-      await requireUser(token);
+      const user = await requireUser(token);
+      const visible = await handlers.listProducts(token);
       const { count } = await supabase.from('products').select('*', { count: 'exact', head: true });
-      return { count };
+      return { count, visibleCount: Array.isArray(visible) ? visible.length : 0, user: { email: user.email, role: user.role } };
     },
 
     async debugProviderData(token) {
