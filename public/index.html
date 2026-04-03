@@ -3132,6 +3132,7 @@
 
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
+    if (name !== 'chat') stopChatPolling();
     try { onShowView(name); } catch(_e) {}
   };
 
@@ -3242,7 +3243,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       .withFailureHandler(e=>toast(e.message||e))
       .login(li_email.value.trim(), li_pass.value, remember);
   }
-  function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
+  function logout(){ stopChatPolling(); localStorage.removeItem(tokenKey); openLogin(); }
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3692,6 +3693,12 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   let chatPollTimer = null;
   let chatPingTimer = null;
 
+  function stopChatPolling(){
+    if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; }
+    if (chatPingTimer){ clearInterval(chatPingTimer); chatPingTimer = null; }
+  }
+
+
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
     b = String(b||'').trim().toLowerCase();
@@ -3700,15 +3707,27 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function loadChat(){
+    const chatView = document.getElementById('view-chat');
+    if (!chatView || chatView.classList.contains('hidden')) {
+      stopChatPolling();
+      return;
+    }
+
     loadChatContacts();
     loadChatThreads();
 
     if (!chatPingTimer){
-      chatPingTimer = setInterval(()=>{ chatPing(); }, 15000);
+      chatPingTimer = setInterval(()=>{
+        const visible = document.getElementById('view-chat') && !document.getElementById('view-chat').classList.contains('hidden');
+        if (!visible) { stopChatPolling(); return; }
+        chatPing();
+      }, 15000);
       chatPing();
     }
     if (!chatPollTimer){
       chatPollTimer = setInterval(()=>{
+        const visible = document.getElementById('view-chat') && !document.getElementById('view-chat').classList.contains('hidden');
+        if (!visible) { stopChatPolling(); return; }
         loadChatThreads(true);
         if (chatSelectedKey) loadChatMessages(true);
       }, 5000);
@@ -4015,7 +4034,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
   function applyCatalogRows(rows, opts){
     opts = opts || {};
-    products = Array.isArray(rows) ? rows.slice() : [];
+    products = normalizeCatalogRows(rows);
     catalogMap = {};
     products.forEach(p=>{
       const sku = String(p?.sku || '').trim();
@@ -4029,8 +4048,15 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       else stat.textContent = `Catálogo cargado (${products.length})`;
     }
 
-    renderProductCards();
-    renderProductsTableChunked(products);
+    try {
+      renderProductCards();
+      renderProductsTableChunked(products);
+    } catch(err) {
+      console.error('Error renderizando catálogo:', err);
+      if (stat) stat.textContent = 'Error renderizando catálogo';
+      const grid = document.getElementById('prodGrid');
+      if (grid) grid.innerHTML = `<div class="card"><b>Error mostrando catálogo</b><div class="muted" style="margin-top:8px;">${String(err?.message || err)}</div></div>`;
+    }
 
     const box = document.getElementById('itemsBox');
     if (box) {
@@ -4113,11 +4139,12 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     catalogLoadPromise = new Promise((resolve, reject)=>{
       google.script.run
         .withSuccessHandler(rows=>{
+          const normalizedRows = normalizeCatalogRows(rows);
           catalogLoadedAt = Date.now();
-          saveCatalogCache(rows);
-          applyCatalogRows(rows, { fromCache: false });
+          saveCatalogCache(normalizedRows);
+          applyCatalogRows(normalizedRows, { fromCache: false });
           catalogLoadPromise = null;
-          resolve(rows);
+          resolve(normalizedRows);
         })
         .withFailureHandler(e=>{
           catalogLoadPromise = null;
@@ -4380,29 +4407,52 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
   function renderProductCards(){
     const grid=document.getElementById('prodGrid'); if (!grid) return;
-    const q=(document.getElementById('prod_q')?.value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+    const q=(document.getElementById('prod_q')?.value||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+    const role = String(me?.role || '').toUpperCase();
+    const myEmail = String(me?.email || '').toLowerCase();
 
-    let filtered = products || [];
+    let filtered = Array.isArray(products) ? products.slice() : [];
 
     if (currentProductTab === 'favoritos') {
       filtered = filtered.filter(p => userFavorites.includes(p.sku));
     } else if (currentProductTab === 'privados') {
       filtered = filtered.filter(p => {
-        const allowed = String(p.private_to_emails || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
-        return allowed.includes((me?.email || '').toLowerCase());
+        const allowed = String(p.private_to_emails || p.vendor_private_to || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+        return allowed.includes(myEmail);
+      });
+    } else {
+      filtered = filtered.filter(p => {
+        if (role === 'PROVEEDOR') {
+          return String(p.provider_email || '').trim().toLowerCase() === myEmail;
+        }
+        if (role === 'ADMIN' || role === 'DESPACHANTE') return true;
+        const allowed = String(p.private_to_emails || p.vendor_private_to || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+        return !allowed.length || allowed.includes(myEmail);
       });
     }
 
     if (q) {
       filtered = filtered.filter(p=>{
-        const hay=[p.title||'', p.sku||'', p.provider_email||'', p.provider_name||'', p.description||''].join(' ').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+        const hay=[p.title||'', p.sku||'', p.provider_email||'', p.provider_name||'', p.description||''].join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
         return hay.includes(q);
       });
     }
 
     grid.innerHTML='';
 
+    if (!filtered.length) {
+      const total = Array.isArray(products) ? products.length : 0;
+      grid.innerHTML = `<div class="card" style="grid-column:1/-1;"><div style="font-weight:800;margin-bottom:6px;">No hay productos visibles</div><div class="muted">Total cargados en memoria: ${total}. Usuario actual: ${safeHtml(myEmail || 'sin email')} (${safeHtml(role || 'sin rol')}).</div></div>`;
+      return;
+    }
+
     const grouped = groupProductsByProvider(filtered);
+    if (!grouped.length) {
+      grid.innerHTML = filtered.map(buildProductCard).join('');
+      wireRenderedProductCards(filtered);
+      return;
+    }
+
     grouped.forEach(section=>{
       const wrapper = document.createElement('section');
       wrapper.className = 'provider-section';
@@ -4546,7 +4596,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok=localStorage.getItem(tokenKey);
     google.script.run.withSuccessHandler(()=>{
       toast('Producto eliminado');
-      loadCatalog();
+      clearCatalogCache();
+      loadCatalog(true);
     }).withFailureHandler(e=>toast(e.message||e)).deleteProduct(tok, productId);
   }
 
@@ -4750,7 +4801,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       ensureOrderFormReady();
     }
     if (name === 'products') {
-      loadCatalog();
+      loadCatalog(true);
     }
   }
 
@@ -6790,7 +6841,9 @@ function renderPendingGuidesSimplified() {
         console.log('DEBUG PRODUCTOS:', result);
         alert(`DEBUG PRODUCTOS:
 
-Total productos: ${result?.count ?? 0}`);
+Total tabla: ${result?.count ?? 0}
+Visibles para este usuario: ${result?.visibleCount ?? 0}
+Usuario: ${result?.user?.email || ''} (${result?.user?.role || ''})`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
