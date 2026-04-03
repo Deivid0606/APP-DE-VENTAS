@@ -4005,14 +4005,13 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }catch(_e){}
   }
 
-
   function clearCatalogCache(){
+    try{ localStorage.removeItem(getCatalogCacheKey()); }catch(_e){}
     products = [];
     catalogMap = {};
     catalogLoadedAt = 0;
-    catalogLoadPromise = null;
-    try{ localStorage.removeItem(getCatalogCacheKey()); }catch(_e){}
   }
+
 
   function applyCatalogRows(rows, opts){
     opts = opts || {};
@@ -4529,7 +4528,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       return;
     }
 
-    // Si es PROVEEDOR, forzar su propio email
     if (me?.role === 'PROVEEDOR') {
       data.provider_email = me.email;
     }
@@ -4548,8 +4546,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok=localStorage.getItem(tokenKey);
     google.script.run.withSuccessHandler(()=>{
       toast('Producto eliminado');
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
     }).withFailureHandler(e=>toast(e.message||e)).deleteProduct(tok, productId);
   }
 
@@ -6791,11 +6788,13 @@ function renderPendingGuidesSimplified() {
     google.script.run
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
+        alert(`DEBUG PRODUCTOS:
+
+Total productos: ${result?.count ?? 0}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + e.message);
+        toast('Error en debug: ' + (e.message || e));
       })
       .debugProducts(tok);
   }
