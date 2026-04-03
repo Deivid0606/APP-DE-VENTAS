@@ -168,12 +168,19 @@ async function dispatch(fn, args) {
       const ok = await verifyPassword(password, user.password_hash);
       if (!ok) throw new Error('Credenciales inválidas');
       const token = signSession(user, remember);
-      return { session: { token }, user: sanitizeUser(user) };
+      return {
+        authenticated: true,
+        session: { token },
+        user: sanitizeUser(user)
+      };
     },
 
     async me(token) {
       const user = await requireUser(token);
-      return sanitizeUser(user);
+      return {
+        authenticated: true,
+        user: sanitizeUser(user)
+      };
     },
 
     async requestPasswordReset(email) {
@@ -200,7 +207,11 @@ async function dispatch(fn, args) {
       await supabase.from('users').update({ password_hash }).eq('id', row.user_id).throwOnError();
       await supabase.from('password_reset_tokens').update({ used_at: nowIso() }).eq('id', row.id).throwOnError();
       const token = signSession(row.users, false);
-      return { session: { token }, user: sanitizeUser(row.users) };
+      return {
+        authenticated: true,
+        session: { token },
+        user: sanitizeUser(row.users)
+      };
     },
 
     async getAllUsersWithStatus(token) {
