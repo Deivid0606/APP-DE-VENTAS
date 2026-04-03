@@ -1444,7 +1444,7 @@
     <button id="navAssign" class="btn hidden" onclick="show('assignOrders'); loadAssignableOrders()">Asignar Pedidos</button>
     <button id="navMap" class="btn hidden" onclick="show('mapa'); openMapaView()">Mapa</button>
    
-    <button id="navRates" class="btn hidden" onclick="show('rates')">Costos delivery</button>
+    <button id="navRates" class="btn hidden" onclick="show('rates'); loadRates(); loadClientPrices();">Costos delivery</button>
    
     <!-- === MODIFICADO: Ahora PROVEEDOR también ve Pago de comisiones === -->
     <button id="navComms" class="btn hidden" onclick="show('commissions'); openCommissionsView()">Pago de comisiones</button>
@@ -3140,7 +3140,9 @@
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
   window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} });
+  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} });
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} } });
+  window.addEventListener('load', ()=>{ try { stopChatPolling(); } catch(_e) {} });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3169,7 +3171,7 @@
    
     // El resto queda igual...
     vis('navNews', isAuthed);
-   vis('navChat', isAuthed);
+   vis('navChat', false);
 
     // === NUEVO: botón visible solo para ADMIN y DESPACHANTE
     vis('navWithGuides', isAuthed && (role==='ADMIN' || role==='DESPACHANTE' || role==='PROVEEDOR'));
@@ -4751,6 +4753,10 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (name === 'products') {
       loadCatalog();
     }
+    if (name === 'rates') {
+      try { loadRates(); } catch(_e) {}
+      try { loadClientPrices(); } catch(_e) {}
+    }
   }
 
   // === NUEVO: Variable para prevenir duplicados en saveOrder ===
@@ -5536,7 +5542,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const city = (cp_city.value||'').trim(); const price = Number(cp_price.value||0);
     if (!city || price<=0){ toast('Ciudad y precio son obligatorios'); return; }
-    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
+    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; try { loadClientPrices(); } catch(_e) {} ; try { buildCityDropdown(); } catch(_e) {} ; setTimeout(()=>{ try { loadClientPrices(); } catch(_e) {} }, 300); })
       .withFailureHandler(e=>toast(e.message||e))
       .setClientCityPrice(tok, city, price);
   }
