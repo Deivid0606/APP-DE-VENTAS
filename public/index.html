@@ -1422,7 +1422,7 @@
     <button id="navLogin" class="btn primary" onclick="openLogin()">Login</button>
     <button id="navDash"  class="btn hidden" onclick="show('dashboard')">Dashboard</button>
     <button id="navNews"  class="btn hidden" onclick="show('news')">Novedades</button>
-   <button id="navChat" class="btn hidden" style="display:none!important" onclick="return false;">Chat</button>
+   <!-- Chat eliminado -->
 
     <!-- === NUEVO: pestaña Pedidos con guías (solo ADMIN / DESPACHANTE) === -->
     <button id="navWithGuides" class="btn hidden" onclick="show('withGuides')">Pedidos con guías</button>
@@ -1444,7 +1444,7 @@
     <button id="navAssign" class="btn hidden" onclick="show('assignOrders'); loadAssignableOrders()">Asignar Pedidos</button>
     <button id="navMap" class="btn hidden" onclick="show('mapa'); openMapaView()">Mapa</button>
    
-    <button id="navRates" class="btn hidden" onclick="show('rates')">Costos delivery</button>
+    <button id="navRates" class="btn hidden" onclick="show('rates'); loadRates(); loadClientPrices()">Costos delivery</button>
    
     <!-- === MODIFICADO: Ahora PROVEEDOR también ve Pago de comisiones === -->
     <button id="navComms" class="btn hidden" onclick="show('commissions'); openCommissionsView()">Pago de comisiones</button>
@@ -3130,9 +3130,9 @@
     markUpdated();
   }
 
-  const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
+  const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
-    if (name !== 'chat') stopChatPolling();
+    stopChatPolling();
     try { onShowView(name); } catch(_e) {}
   };
 
@@ -3141,6 +3141,7 @@
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
   window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} });
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} } });
+  window.addEventListener('load', ()=>{ try { stopChatPolling(); } catch(_e) {} });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3169,7 +3170,7 @@
    
     // El resto queda igual...
     vis('navNews', isAuthed);
-   vis('navChat', isAuthed);
+   vis('navChat', false);
 
     // === NUEVO: botón visible solo para ADMIN y DESPACHANTE
     vis('navWithGuides', isAuthed && (role==='ADMIN' || role==='DESPACHANTE' || role==='PROVEEDOR'));
@@ -4749,7 +4750,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       ensureOrderFormReady();
     }
     if (name === 'products') {
-      loadCatalog();
+      loadCatalog(true);
+    }
+    if (name === 'rates') {
+      loadRates();
+      loadClientPrices();
     }
   }
 
@@ -5536,7 +5541,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const city = (cp_city.value||'').trim(); const price = Number(cp_price.value||0);
     if (!city || price<=0){ toast('Ciudad y precio son obligatorios'); return; }
-    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
+    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); markUpdated(); })
       .withFailureHandler(e=>toast(e.message||e))
       .setClientCityPrice(tok, city, price);
   }
