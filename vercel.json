@@ -1,3 +1,7 @@
 {
-  "version": 2
+  "version": 2,
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/public/index.html" }
+  ]
 }
