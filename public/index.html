@@ -3133,6 +3133,7 @@
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
     if (name !== 'chat') stopChatPolling();
+    if (name !== 'mapa') stopMapaActivity();
     try { onShowView(name); } catch(_e) {}
   };
 
@@ -5560,7 +5561,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     document.getElementById('clientPricesAdminBox').classList.toggle('hidden', me?.role!=='ADMIN');
     google.script.run.withSuccessHandler(rows=>{
       const tb=document.getElementById('client_prices_tbody'); if (!tb) return; tb.innerHTML='';
-      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price)}</td>`; tb.appendChild(tr); });
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(Number(r.price_gs ?? r.price ?? 0))}</td>`; tb.appendChild(tr); });
       markUpdated();
     }).withFailureHandler(e=>toast(e.message||e)).getDeliveryClientPrices(tok);
   }
@@ -7939,6 +7940,31 @@ function renderPendingGuidesSimplified() {
     if (deliveryGeoTimer) clearInterval(deliveryGeoTimer);
     deliveryGeoTimer = null;
   }
+
+  function stopMapaActivity(){
+    if (liveMapRefreshTimer){
+      clearInterval(liveMapRefreshTimer);
+      liveMapRefreshTimer = null;
+    }
+    stopDeliveryGeolocation();
+  }
+
+  document.addEventListener('visibilitychange', ()=>{
+    if (document.hidden){
+      stopChatPolling();
+      stopMapaActivity();
+    } else {
+      const chatView = document.getElementById('view-chat');
+      const mapView = document.getElementById('view-mapa');
+      if (chatView && !chatView.classList.contains('hidden')) loadChat();
+      if (mapView && !mapView.classList.contains('hidden')) openMapaView();
+    }
+  });
+
+  window.addEventListener('beforeunload', ()=>{
+    stopChatPolling();
+    stopMapaActivity();
+  });
 
   function escapeHtml(text){
     return String(text || '').replace(/[&<>"']/g, function(ch){
