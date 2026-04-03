@@ -3236,7 +3236,15 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     else localStorage.removeItem(emailKey);
 
     google.script.run.withSuccessHandler(res=>{
-        localStorage.setItem(tokenKey, res.session.token);
+        const token = res?.session?.token || res?.result?.session?.token || '';
+        if (!token){
+          console.error('Respuesta inesperada en login:', res);
+          toast('Login respondió sin token');
+          return;
+        }
+        localStorage.setItem(tokenKey, token);
+        const user = res?.user || res?.result?.user || null;
+        if (user) me = user;
         init();
       })
       .withFailureHandler(e=>toast(e.message||e))
@@ -3295,8 +3303,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function init(){
     const tok=localStorage.getItem(tokenKey);
     google.script.run.withSuccessHandler(res=>{
-      if (!res.authenticated){ openLogin(); return; }
-      me=res.user; setUserBoxUI(me); setNavForAuth(true, me.role);
+      const payload = res?.result || res || {};
+      const authenticated = payload?.authenticated ?? !!payload?.user;
+      const currentUser = payload?.user || (payload?.email ? payload : null);
+      if (!authenticated || !currentUser){ openLogin(); return; }
+      me=currentUser; setUserBoxUI(me); setNavForAuth(true, me.role);
       document.getElementById('roleChip').textContent = me.role;
 
       installGlobalButtonFeedback();
@@ -5914,8 +5925,9 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     google.script.run
       .withSuccessHandler(res=>{
         toast('Contraseña actualizada');
-        if (res?.session?.token){
-          localStorage.setItem(tokenKey, res.session.token);
+        const token = res?.session?.token || res?.result?.session?.token || '';
+        if (token){
+          localStorage.setItem(tokenKey, token);
           closeResetSet();
           init();
         } else {
