@@ -1422,7 +1422,7 @@
     <button id="navLogin" class="btn primary" onclick="openLogin()">Login</button>
     <button id="navDash"  class="btn hidden" onclick="show('dashboard')">Dashboard</button>
     <button id="navNews"  class="btn hidden" onclick="show('news')">Novedades</button>
-   <button id="navChat" class="btn hidden" onclick="show('chat'); loadChat()">Chat</button>
+   <button id="navChat" class="btn hidden" style="display:none!important" onclick="return false;">Chat</button>
 
     <!-- === NUEVO: pestaña Pedidos con guías (solo ADMIN / DESPACHANTE) === -->
     <button id="navWithGuides" class="btn hidden" onclick="show('withGuides')">Pedidos con guías</button>
@@ -3133,13 +3133,14 @@
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
     if (name !== 'chat') stopChatPolling();
-    if (name !== 'mapa') stopMapaActivity();
     try { onShowView(name); } catch(_e) {}
   };
 
   // sello de última actualización
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
+  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} });
+  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} } });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3694,6 +3695,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   let chatPollTimer = null;
   let chatPingTimer = null;
 
+  function stopChatPolling(){
+    try { if (chatPingTimer){ clearInterval(chatPingTimer); chatPingTimer = null; } } catch(_e) {}
+    try { if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; } } catch(_e) {}
+  }
+
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
     b = String(b||'').trim().toLowerCase();
@@ -3723,17 +3729,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       if (pres) pres.textContent = '—';
       const box = document.getElementById('chatMessages');
       if (box) box.innerHTML = '<span class="badge">Elegí un destinatario para empezar.</span>';
-    }
-  }
-
-  function stopChatPolling(){
-    if (chatPingTimer){
-      clearInterval(chatPingTimer);
-      chatPingTimer = null;
-    }
-    if (chatPollTimer){
-      clearInterval(chatPollTimer);
-      chatPollTimer = null;
     }
   }
 
@@ -4018,14 +4013,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }catch(_e){}
   }
 
-  function clearCatalogCache(){
-    products = [];
-    catalogMap = {};
-    catalogLoadedAt = 0;
-    catalogLoadPromise = null;
-    try{ localStorage.removeItem(getCatalogCacheKey()); }catch(_e){}
-  }
-
   function applyCatalogRows(rows, opts){
     opts = opts || {};
     products = Array.isArray(rows) ? rows.slice() : [];
@@ -4126,15 +4113,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     catalogLoadPromise = new Promise((resolve, reject)=>{
       google.script.run
         .withSuccessHandler(rows=>{
-          const list = Array.isArray(rows)
-            ? rows
-            : (Array.isArray(rows?.rows) ? rows.rows
-              : (Array.isArray(rows?.products) ? rows.products : []));
           catalogLoadedAt = Date.now();
-          saveCatalogCache(list);
-          applyCatalogRows(list, { fromCache: false });
+          saveCatalogCache(rows);
+          applyCatalogRows(rows, { fromCache: false });
           catalogLoadPromise = null;
-          resolve(list);
+          resolve(rows);
         })
         .withFailureHandler(e=>{
           catalogLoadPromise = null;
@@ -4153,10 +4136,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     });
 
     return catalogLoadPromise;
-  }
-
-  function loadProducts(force){
-    return loadCatalog(force === undefined ? true : !!force);
   }
 
   // === NUEVO: Variables para tabs de productos ===
@@ -4403,13 +4382,13 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const grid=document.getElementById('prodGrid'); if (!grid) return;
     const q=(document.getElementById('prod_q')?.value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
 
-    let filtered = Array.isArray(products) ? products.slice() : [];
+    let filtered = products || [];
 
     if (currentProductTab === 'favoritos') {
       filtered = filtered.filter(p => userFavorites.includes(p.sku));
     } else if (currentProductTab === 'privados') {
       filtered = filtered.filter(p => {
-        const allowed = String(p.private_to_emails || p.vendor_private_to || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+        const allowed = String(p.private_to_emails || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
         return allowed.includes((me?.email || '').toLowerCase());
       });
     }
@@ -4422,14 +4401,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
 
     grid.innerHTML='';
-
-    if (!filtered.length) {
-      grid.innerHTML = `<div class="card" style="padding:20px;">
-        <div style="font-weight:800; font-size:18px; margin-bottom:8px;">No hay productos visibles</div>
-        <div class="muted">Total cargados en memoria: ${Array.isArray(products) ? products.length : 0}. Usuario actual: ${me?.email || 'N/D'} (${me?.role || 'N/D'}).</div>
-      </div>`;
-      return;
-    }
 
     const grouped = groupProductsByProvider(filtered);
     grouped.forEach(section=>{
@@ -4565,8 +4536,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     google.script.run.withSuccessHandler(()=>{
       toast('Producto actualizado');
       closeEditProductModal();
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
     }).withFailureHandler(e=>toast(e.message||e)).updateProduct(tok, productId, data);
   }
 
@@ -4576,8 +4546,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok=localStorage.getItem(tokenKey);
     google.script.run.withSuccessHandler(()=>{
       toast('Producto eliminado');
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
     }).withFailureHandler(e=>toast(e.message||e)).deleteProduct(tok, productId);
   }
 
@@ -4622,8 +4591,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     google.script.run
       .withSuccessHandler(() => {
         toast('Producto guardado');
-        clearCatalogCache();
-        loadCatalog(true);
+        loadCatalog();
         document.getElementById('addProductBox').classList.add('hidden');
         ['np_title','np_sku','np_price','np_real_cost','np_stock','np_real_stock','np_img','np_img2','np_img3','np_description','np_provider_email','np_private_to']
           .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
@@ -4781,8 +4749,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       ensureOrderFormReady();
     }
     if (name === 'products') {
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
     }
   }
 
@@ -5561,7 +5528,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     document.getElementById('clientPricesAdminBox').classList.toggle('hidden', me?.role!=='ADMIN');
     google.script.run.withSuccessHandler(rows=>{
       const tb=document.getElementById('client_prices_tbody'); if (!tb) return; tb.innerHTML='';
-      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(Number(r.price_gs ?? r.price ?? 0))}</td>`; tb.appendChild(tr); });
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price_gs || 0)}</td>`; tb.appendChild(tr); });
       markUpdated();
     }).withFailureHandler(e=>toast(e.message||e)).getDeliveryClientPrices(tok);
   }
@@ -6819,21 +6786,12 @@ function renderPendingGuidesSimplified() {
     const tok = localStorage.getItem(tokenKey);
     google.script.run
       .withSuccessHandler(result => {
-        google.script.run
-          .withSuccessHandler(rows => {
-            const visible = Array.isArray(rows) ? rows.length : 0;
-            const total = Number(result?.count || 0);
-            alert(`DEBUG PRODUCTOS:\n\nTotal tabla: ${total}\nVisibles para este usuario: ${visible}\nUsuario: ${me?.email || 'N/D'} (${me?.role || 'N/D'})`);
-          })
-          .withFailureHandler(e => {
-            console.error('Error debug listProducts:', e);
-            toast('Error en debug: ' + (e.message || e));
-          })
-          .listProducts(tok);
+        console.log('DEBUG PRODUCTOS:', result);
+        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + (e.message || e));
+        toast('Error en debug: ' + e.message);
       })
       .debugProducts(tok);
   }
@@ -7940,31 +7898,6 @@ function renderPendingGuidesSimplified() {
     if (deliveryGeoTimer) clearInterval(deliveryGeoTimer);
     deliveryGeoTimer = null;
   }
-
-  function stopMapaActivity(){
-    if (liveMapRefreshTimer){
-      clearInterval(liveMapRefreshTimer);
-      liveMapRefreshTimer = null;
-    }
-    stopDeliveryGeolocation();
-  }
-
-  document.addEventListener('visibilitychange', ()=>{
-    if (document.hidden){
-      stopChatPolling();
-      stopMapaActivity();
-    } else {
-      const chatView = document.getElementById('view-chat');
-      const mapView = document.getElementById('view-mapa');
-      if (chatView && !chatView.classList.contains('hidden')) loadChat();
-      if (mapView && !mapView.classList.contains('hidden')) openMapaView();
-    }
-  });
-
-  window.addEventListener('beforeunload', ()=>{
-    stopChatPolling();
-    stopMapaActivity();
-  });
 
   function escapeHtml(text){
     return String(text || '').replace(/[&<>"']/g, function(ch){
