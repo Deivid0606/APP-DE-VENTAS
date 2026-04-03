@@ -3243,7 +3243,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       .withFailureHandler(e=>toast(e.message||e))
       .login(li_email.value.trim(), li_pass.value, remember);
   }
-  function logout(){ stopChatPolling(); localStorage.removeItem(tokenKey); openLogin(); }
+  function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3693,12 +3693,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   let chatPollTimer = null;
   let chatPingTimer = null;
 
-  function stopChatPolling(){
-    if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; }
-    if (chatPingTimer){ clearInterval(chatPingTimer); chatPingTimer = null; }
-  }
-
-
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
     b = String(b||'').trim().toLowerCase();
@@ -3707,27 +3701,15 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function loadChat(){
-    const chatView = document.getElementById('view-chat');
-    if (!chatView || chatView.classList.contains('hidden')) {
-      stopChatPolling();
-      return;
-    }
-
     loadChatContacts();
     loadChatThreads();
 
     if (!chatPingTimer){
-      chatPingTimer = setInterval(()=>{
-        const visible = document.getElementById('view-chat') && !document.getElementById('view-chat').classList.contains('hidden');
-        if (!visible) { stopChatPolling(); return; }
-        chatPing();
-      }, 15000);
+      chatPingTimer = setInterval(()=>{ chatPing(); }, 15000);
       chatPing();
     }
     if (!chatPollTimer){
       chatPollTimer = setInterval(()=>{
-        const visible = document.getElementById('view-chat') && !document.getElementById('view-chat').classList.contains('hidden');
-        if (!visible) { stopChatPolling(); return; }
         loadChatThreads(true);
         if (chatSelectedKey) loadChatMessages(true);
       }, 5000);
@@ -3740,6 +3722,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       if (pres) pres.textContent = '—';
       const box = document.getElementById('chatMessages');
       if (box) box.innerHTML = '<span class="badge">Elegí un destinatario para empezar.</span>';
+    }
+  }
+
+  function stopChatPolling(){
+    if (chatPingTimer){
+      clearInterval(chatPingTimer);
+      chatPingTimer = null;
+    }
+    if (chatPollTimer){
+      clearInterval(chatPollTimer);
+      chatPollTimer = null;
     }
   }
 
@@ -4025,16 +4018,16 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function clearCatalogCache(){
-    try{ localStorage.removeItem(getCatalogCacheKey()); }catch(_e){}
     products = [];
     catalogMap = {};
     catalogLoadedAt = 0;
+    catalogLoadPromise = null;
+    try{ localStorage.removeItem(getCatalogCacheKey()); }catch(_e){}
   }
-
 
   function applyCatalogRows(rows, opts){
     opts = opts || {};
-    products = normalizeCatalogRows(rows);
+    products = Array.isArray(rows) ? rows.slice() : [];
     catalogMap = {};
     products.forEach(p=>{
       const sku = String(p?.sku || '').trim();
@@ -4048,15 +4041,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       else stat.textContent = `Catálogo cargado (${products.length})`;
     }
 
-    try {
-      renderProductCards();
-      renderProductsTableChunked(products);
-    } catch(err) {
-      console.error('Error renderizando catálogo:', err);
-      if (stat) stat.textContent = 'Error renderizando catálogo';
-      const grid = document.getElementById('prodGrid');
-      if (grid) grid.innerHTML = `<div class="card"><b>Error mostrando catálogo</b><div class="muted" style="margin-top:8px;">${String(err?.message || err)}</div></div>`;
-    }
+    renderProductCards();
+    renderProductsTableChunked(products);
 
     const box = document.getElementById('itemsBox');
     if (box) {
@@ -4139,12 +4125,15 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     catalogLoadPromise = new Promise((resolve, reject)=>{
       google.script.run
         .withSuccessHandler(rows=>{
-          const normalizedRows = normalizeCatalogRows(rows);
+          const list = Array.isArray(rows)
+            ? rows
+            : (Array.isArray(rows?.rows) ? rows.rows
+              : (Array.isArray(rows?.products) ? rows.products : []));
           catalogLoadedAt = Date.now();
-          saveCatalogCache(normalizedRows);
-          applyCatalogRows(normalizedRows, { fromCache: false });
+          saveCatalogCache(list);
+          applyCatalogRows(list, { fromCache: false });
           catalogLoadPromise = null;
-          resolve(normalizedRows);
+          resolve(list);
         })
         .withFailureHandler(e=>{
           catalogLoadPromise = null;
@@ -4163,6 +4152,10 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     });
 
     return catalogLoadPromise;
+  }
+
+  function loadProducts(force){
+    return loadCatalog(force === undefined ? true : !!force);
   }
 
   // === NUEVO: Variables para tabs de productos ===
@@ -4407,9 +4400,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
   function renderProductCards(){
     const grid=document.getElementById('prodGrid'); if (!grid) return;
-    const q=(document.getElementById('prod_q')?.value||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
-    const role = String(me?.role || '').toUpperCase();
-    const myEmail = String(me?.email || '').toLowerCase();
+    const q=(document.getElementById('prod_q')?.value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
 
     let filtered = Array.isArray(products) ? products.slice() : [];
 
@@ -4418,22 +4409,13 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     } else if (currentProductTab === 'privados') {
       filtered = filtered.filter(p => {
         const allowed = String(p.private_to_emails || p.vendor_private_to || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
-        return allowed.includes(myEmail);
-      });
-    } else {
-      filtered = filtered.filter(p => {
-        if (role === 'PROVEEDOR') {
-          return String(p.provider_email || '').trim().toLowerCase() === myEmail;
-        }
-        if (role === 'ADMIN' || role === 'DESPACHANTE') return true;
-        const allowed = String(p.private_to_emails || p.vendor_private_to || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
-        return !allowed.length || allowed.includes(myEmail);
+        return allowed.includes((me?.email || '').toLowerCase());
       });
     }
 
     if (q) {
       filtered = filtered.filter(p=>{
-        const hay=[p.title||'', p.sku||'', p.provider_email||'', p.provider_name||'', p.description||''].join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+        const hay=[p.title||'', p.sku||'', p.provider_email||'', p.provider_name||'', p.description||''].join(' ').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
         return hay.includes(q);
       });
     }
@@ -4441,18 +4423,14 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     grid.innerHTML='';
 
     if (!filtered.length) {
-      const total = Array.isArray(products) ? products.length : 0;
-      grid.innerHTML = `<div class="card" style="grid-column:1/-1;"><div style="font-weight:800;margin-bottom:6px;">No hay productos visibles</div><div class="muted">Total cargados en memoria: ${total}. Usuario actual: ${safeHtml(myEmail || 'sin email')} (${safeHtml(role || 'sin rol')}).</div></div>`;
+      grid.innerHTML = `<div class="card" style="padding:20px;">
+        <div style="font-weight:800; font-size:18px; margin-bottom:8px;">No hay productos visibles</div>
+        <div class="muted">Total cargados en memoria: ${Array.isArray(products) ? products.length : 0}. Usuario actual: ${me?.email || 'N/D'} (${me?.role || 'N/D'}).</div>
+      </div>`;
       return;
     }
 
     const grouped = groupProductsByProvider(filtered);
-    if (!grouped.length) {
-      grid.innerHTML = filtered.map(buildProductCard).join('');
-      wireRenderedProductCards(filtered);
-      return;
-    }
-
     grouped.forEach(section=>{
       const wrapper = document.createElement('section');
       wrapper.className = 'provider-section';
@@ -4578,6 +4556,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       return;
     }
 
+    // Si es PROVEEDOR, forzar su propio email
     if (me?.role === 'PROVEEDOR') {
       data.provider_email = me.email;
     }
@@ -4801,6 +4780,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       ensureOrderFormReady();
     }
     if (name === 'products') {
+      clearCatalogCache();
       loadCatalog(true);
     }
   }
@@ -6838,12 +6818,17 @@ function renderPendingGuidesSimplified() {
     const tok = localStorage.getItem(tokenKey);
     google.script.run
       .withSuccessHandler(result => {
-        console.log('DEBUG PRODUCTOS:', result);
-        alert(`DEBUG PRODUCTOS:
-
-Total tabla: ${result?.count ?? 0}
-Visibles para este usuario: ${result?.visibleCount ?? 0}
-Usuario: ${result?.user?.email || ''} (${result?.user?.role || ''})`);
+        google.script.run
+          .withSuccessHandler(rows => {
+            const visible = Array.isArray(rows) ? rows.length : 0;
+            const total = Number(result?.count || 0);
+            alert(`DEBUG PRODUCTOS:\n\nTotal tabla: ${total}\nVisibles para este usuario: ${visible}\nUsuario: ${me?.email || 'N/D'} (${me?.role || 'N/D'})`);
+          })
+          .withFailureHandler(e => {
+            console.error('Error debug listProducts:', e);
+            toast('Error en debug: ' + (e.message || e));
+          })
+          .listProducts(tok);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
