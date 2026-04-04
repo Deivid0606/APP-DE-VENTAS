@@ -83,12 +83,22 @@ async function listOrdersBase(user, fromISO, toISO, q, onlyStatus = '', onlyDeli
   const { data, error } = await query;
   if (error) throw error;
 
-  const rows = (data || []).map((o) => ({
-    ...o,
-    assigned_delivery: o.assigned_delivery || '',
-    items: o.order_items || [],
-    items_json: JSON.stringify(o.order_items || [])
-  }));
+  const rows = (data || []).map((o) => {
+    const sale_total_gs = Number(o.sale_total_gs || 0);
+    const cost_total_gs = Number(o.cost_total_gs || 0);
+    const delivery_fee_gs = Number(o.delivery_fee_gs || 0);
+    return {
+      ...o,
+      assigned_delivery: o.assigned_delivery || '',
+      items: o.order_items || [],
+      items_json: JSON.stringify(o.order_items || []),
+      sale_total_gs,
+      cost_total_gs,
+      total_gs: sale_total_gs,
+      commission_gs: Math.max(sale_total_gs - cost_total_gs, 0),
+      delivery_fee_gs
+    };
+  });
   return filterOrdersInMemory(rows, q);
 }
 
@@ -365,6 +375,8 @@ async function dispatch(fn, args) {
       const totals = calcOrderTotals(order.items || []);
       const provider_emails = [...new Set(totals.items.map((x) => norm(x.provider_email)).filter(Boolean))];
       const vendor_email = norm(order.vendor_email || (user.role === 'VENDEDOR' ? user.email : '')) || null;
+      const delivery_fee_gs = Number(order.delivery_fee_gs || order.delivery_gs || 0);
+      const commission_gs = Math.max(Number(totals.sale_total_gs || 0) - Number(totals.cost_total_gs || 0), 0);
       const row = {
         customer_name: order.customer_name,
         phone: order.phone,
@@ -380,6 +392,9 @@ async function dispatch(fn, args) {
         source_status: order.source_status || '',
         sale_total_gs: totals.sale_total_gs,
         cost_total_gs: totals.cost_total_gs,
+        total_gs: totals.sale_total_gs,
+        commission_gs,
+        delivery_fee_gs,
         status: order.status || 'PENDIENTE',
         status2: order.status2 || 'GUIA PENDIENTE',
         created_by: user.email
