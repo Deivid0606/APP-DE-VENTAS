@@ -5,19 +5,16 @@
 <base target="_top">
 <title>EL-ECOMMERCE DCANP GROUP</title>
 <script>
-/**
- * Runner nativo para Vercel + Supabase.
- * Convierte: apiRun.withSuccessHandler(fn).withFailureHandler(err).miFuncion(a,b)
- * en: fetch("/api/gas", {fn:"miFuncion", args:[a,b]})
- */
-const apiRun = (() => {
-  function makeRunner() {
+(function initSupabaseApiRunner(){
+  function makeApiRunner() {
     let onSuccess = null;
     let onFailure = null;
+
     const runner = {
       withSuccessHandler(cb){ onSuccess = cb; return proxy; },
       withFailureHandler(cb){ onFailure = cb; return proxy; },
     };
+
     const proxy = new Proxy(runner, {
       get(target, prop) {
         if (prop in target) return target[prop];
@@ -52,7 +49,8 @@ const apiRun = (() => {
     });
     return proxy;
   }
-  return makeRunner();
+
+  window.apiRun = makeApiRunner();
 })();
 </script>
 
@@ -3123,12 +3121,22 @@ const apiRun = (() => {
 
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
+    if (name !== 'chat') stopChatPolling();
+    if (name !== 'mapa') stopMapPolling();
     try { onShowView(name); } catch(_e) {}
   };
 
   // sello de última actualización
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
+  function cityEq(a,b){ return String(a||'').trim().toLowerCase() === String(b||'').trim().toLowerCase(); }
+  function getClientCityPrice(city){
+    const found = (clientCityPrices||[]).find(c => cityEq(c.city, city));
+    return found ? Number(found.price_gs || found.price || 0) : 0;
+  }
+  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
+  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} } });
+  window.addEventListener('load', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3157,7 +3165,7 @@ const apiRun = (() => {
    
     // El resto queda igual...
     vis('navNews', isAuthed);
-   vis('navChat', isAuthed);
+   vis('navChat', false);
 
     // === NUEVO: botón visible solo para ADMIN y DESPACHANTE
     vis('navWithGuides', isAuthed && (role==='ADMIN' || role==='DESPACHANTE' || role==='PROVEEDOR'));
@@ -3358,7 +3366,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rendicionBox.classList.toggle('hidden', !(me?.role === 'PROVEEDOR' || me?.role === 'ADMIN'));
       }
 
-      loadCatalog();
+      clearCatalogCache();
+      loadCatalog(true);
       buildCityDropdown();
       refreshOrders();
       loadRates();
@@ -3683,6 +3692,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   let chatPollTimer = null;
   let chatPingTimer = null;
 
+  function stopChatPolling(){
+    try { if (chatPingTimer){ clearInterval(chatPingTimer); chatPingTimer = null; } } catch(_e) {}
+    try { if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; } } catch(_e) {}
+  }
+
+
+  function stopMapPolling(){
+    try { if (liveMapRefreshTimer){ clearInterval(liveMapRefreshTimer); liveMapRefreshTimer = null; } } catch(_e) {}
+    try { stopDeliveryGeolocation(); } catch(_e) {}
+  }
+
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
     b = String(b||'').trim().toLowerCase();
@@ -3953,6 +3973,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     refreshWallet();
     loadRates();
     loadClientPrices();
+    try { buildCityDropdown(); } catch(_e) {}
     if (!document.getElementById('view-earnings')?.classList.contains('hidden')) loadEarnings();
 
     // === NUEVO: re-render vista Pedidos con guías
@@ -3994,6 +4015,33 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rows: Array.isArray(rows) ? rows : []
       }));
     }catch(_e){}
+  }
+
+  function clearCatalogCache(){
+    products = [];
+    catalogMap = {};
+    catalogLoadedAt = 0;
+    catalogLoadPromise = null;
+    try { localStorage.removeItem(getCatalogCacheKey()); } catch(_e) {}
+  }
+
+  function normalizeOrderRow(o){
+    const row = Object.assign({}, o || {});
+    row.total_gs = Number(row.total_gs ?? row.sale_total_gs ?? 0);
+    row.sale_total_gs = Number(row.sale_total_gs ?? row.total_gs ?? 0);
+    row.cost_total_gs = Number(row.cost_total_gs ?? 0);
+    row.delivery_fee_gs = Number(row.delivery_fee_gs ?? 0);
+    row.commission_gs = Number(row.commission_gs ?? Math.max(row.sale_total_gs - row.cost_total_gs - row.delivery_fee_gs, 0));
+    row.items = Array.isArray(row.items) ? row.items : (Array.isArray(row.order_items) ? row.order_items : []);
+    row.provider_emails_list = String(row.provider_emails_list || row.provider_email || '').trim();
+    row.provider_email = String(row.provider_email || '').trim();
+    row.vendor_email = String(row.vendor_email || '').trim();
+    row.created_at = row.created_at || row.assigned_at || row.updated_at || '';
+    return row;
+  }
+
+  function normalizeOrderRows(rows){
+    return (Array.isArray(rows) ? rows : []).map(normalizeOrderRow);
   }
 
   function applyCatalogRows(rows, opts){
@@ -4588,10 +4636,32 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // =========================
   function buildCityDropdown(){
     const tok=localStorage.getItem(tokenKey);
-    apiRun.withSuccessHandler(rows=>{
-      clientCityPrices=rows||[];
-      const sel=o_city; sel.innerHTML='<option value="">Selecciona ciudad…</option>'+rows.map(r=>`<option>${r.city}</option>`).join('');
-    }).getDeliveryClientPrices(tok);
+    const sel = document.getElementById('o_city');
+    if (!tok || !sel) return;
+    const current = String(sel.value || '').trim();
+    apiRun
+      .withSuccessHandler(rows=>{
+        const clean = Array.isArray(rows) ? rows.filter(r => String(r?.city || '').trim()) : [];
+        const seen = new Set();
+        clientCityPrices = clean.filter(r=>{
+          const key = String(r.city || '').trim().toLowerCase();
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).sort((a,b)=> String(a.city||'').localeCompare(String(b.city||''), 'es', { sensitivity:'base' }));
+
+        sel.innerHTML = '<option value="">Selecciona ciudad…</option>' + clientCityPrices.map(r=>{
+          const city = String(r.city || '').trim();
+          return `<option value="${city}">${city}</option>`;
+        }).join('');
+
+        if (current && clientCityPrices.some(r => cityEq(r.city, current))) {
+          sel.value = clientCityPrices.find(r => cityEq(r.city, current)).city;
+        }
+        try { recalcOrder(); } catch(_e) {}
+      })
+      .withFailureHandler(e=>console.error('Error ciudades:', e))
+      .getDeliveryClientPrices(tok);
   }
 
   // =========================
@@ -4662,11 +4732,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       const s=Number(sale?.value||0); const q=Number(qty?.value||0);
       totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
-    const city=(o_city.value||'').trim();
-    const found=(clientCityPrices||[]).find(c=>String(c.city||'').toLowerCase()===city.toLowerCase());
-    const del=found?Number(found.price_gs||0):0;
-    cityHint.textContent = del?`Delivery cobrado: ${nf(del)} Gs`:'';
-    o_total.value=nf(totalVenta); o_delivery.value=nf(del);
+    const city = String(o_city?.value || '').trim();
+    const del = getClientCityPrice(city);
+    cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
+    o_total.value = nf(totalVenta);
+    o_delivery.value = nf(del);
     o_commission.value = nf(totalVenta - (totalProv + del));
   }
 
@@ -4727,12 +4797,21 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
   }
 
+  document.getElementById('o_city')?.addEventListener('change', ()=>{ try { recalcOrder(); } catch(_e) {} });
+
   function onShowView(name){
     if (name === 'order') {
+      try { buildCityDropdown(); } catch(_e) {}
       ensureOrderFormReady();
+      setTimeout(()=>{ try { buildCityDropdown(); } catch(_e) {} }, 250);
     }
     if (name === 'products') {
-      loadCatalog();
+      clearCatalogCache();
+      loadCatalog(true);
+    }
+    if (name === 'rates') {
+      try { loadRates(); } catch(_e) {}
+      try { loadClientPrices(); } catch(_e) {}
     }
   }
 
@@ -4782,6 +4861,8 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         itemsBox.innerHTML='';
         resetOrderPrefillFlag();
         addItemRow();
+        try { buildCityDropdown(); } catch(_e) {}
+        try { recalcOrder(); } catch(_e) {}
        
         // Re-habilitar botón
         isSavingOrder = false;
@@ -4834,13 +4915,13 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
       ? apiRun.withSuccessHandler(rows=>{
-          lastOrders=rows||[];
+          lastOrders = normalizeOrderRows(rows||[]);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
       : apiRun.withSuccessHandler(rows=>{
-          lastOrders=rows||[];
+          lastOrders = normalizeOrderRows(rows||[]);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
@@ -5319,26 +5400,28 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         kpi_provider_sold.textContent = nf(res.cards.sold);
         kpi_provider_delivered.textContent = nf(res.cards.delivered);
         kpi_provider_canceled.textContent = nf(res.cards.canceled);
-        kpi_provider_profit.textContent = nf(res.cards.profit);
+        kpi_provider_profit.textContent = nf(res.cards.profit || 0);
         kpi_provider_today_profit.textContent = nf(res.cards.delivered_today_profit || 0);
         kpi_provider_range_profit.textContent = nf(res.cards.delivered_range_profit || 0);
         updateProviderLiquidityKPI();
 
-        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
+        const providerSeries = Array.isArray(res?.series) ? res.series : [];
+        const labels=providerSeries.map(s=>s.date), values=providerSeries.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        const providerPie = res?.pie || {};
+        const pl=Object.keys(providerPie), pv=pl.map(k=>providerPie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
         });
 
         const tl=document.getElementById('topList'); tl.innerHTML='';
-        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        ((res&&res.top)||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
         const ml=document.getElementById('mapList'); ml.innerHTML='';
         (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
 
@@ -5373,17 +5456,19 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           document.getElementById('kpi_sum_entregado').textContent = nf(sumaEntregadoTotal);
           kpi_profit.textContent = nf(montoRendir);
         } else {
-          kpi_profit.textContent = nf(res.cards.profit);
+          kpi_profit.textContent = nf(res.cards.profit || 0);
         }
 
-        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
+        const providerSeries = Array.isArray(res?.series) ? res.series : [];
+        const labels=providerSeries.map(s=>s.date), values=providerSeries.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        const providerPie = res?.pie || {};
+        const pl=Object.keys(providerPie), pv=pl.map(k=>providerPie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5406,7 +5491,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         }
 
         const tl=document.getElementById('topList'); tl.innerHTML='';
-        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        ((res&&res.top)||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
         const ml=document.getElementById('mapList'); ml.innerHTML='';
         (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
 
@@ -5511,7 +5596,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     document.getElementById('clientPricesAdminBox').classList.toggle('hidden', me?.role!=='ADMIN');
     apiRun.withSuccessHandler(rows=>{
       const tb=document.getElementById('client_prices_tbody'); if (!tb) return; tb.innerHTML='';
-      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price)}</td>`; tb.appendChild(tr); });
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price_gs || 0)}</td>`; tb.appendChild(tr); });
       markUpdated();
     }).withFailureHandler(e=>toast(e.message||e)).getDeliveryClientPrices(tok);
   }
@@ -6770,11 +6855,20 @@ function renderPendingGuidesSimplified() {
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
+        alert(
+          `DEBUG PRODUCTOS:
+
+` +
+          `Total tabla: ${result?.count ?? 0}
+` +
+          `Visibles para este usuario: ${result?.visibleCount ?? 0}
+` +
+          `Usuario: ${result?.user?.email || '-'} (${result?.user?.role || '-'})`
+        );
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + e.message);
+        toast('Error en debug: ' + (e.message || e));
       })
       .debugProducts(tok);
   }
@@ -6782,14 +6876,15 @@ function renderPendingGuidesSimplified() {
   function debugProviderData(){
     const tok = localStorage.getItem(tokenKey);
     apiRun
-      .withSuccessHandler(result => {
-        console.log('DEBUG PROVEEDOR:', result);
-        const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${result.productosProveedor.length}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
-        alert(msg);
+      .withSuccessHandler(rows => {
+        console.log('DEBUG PROVEEDOR:', rows);
+        alert(`DEBUG PROVEEDOR:
+
+Registros devueltos: ${Array.isArray(rows) ? rows.length : 0}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + e.message);
+        toast('Error en debug: ' + (e.message || e));
       })
       .debugProviderData(tok);
   }
