@@ -3366,8 +3366,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rendicionBox.classList.toggle('hidden', !(me?.role === 'PROVEEDOR' || me?.role === 'ADMIN'));
       }
 
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
       buildCityDropdown();
       refreshOrders();
       loadRates();
@@ -4015,33 +4014,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rows: Array.isArray(rows) ? rows : []
       }));
     }catch(_e){}
-  }
-
-  function clearCatalogCache(){
-    products = [];
-    catalogMap = {};
-    catalogLoadedAt = 0;
-    catalogLoadPromise = null;
-    try { localStorage.removeItem(getCatalogCacheKey()); } catch(_e) {}
-  }
-
-  function normalizeOrderRow(o){
-    const row = Object.assign({}, o || {});
-    row.total_gs = Number(row.total_gs ?? row.sale_total_gs ?? 0);
-    row.sale_total_gs = Number(row.sale_total_gs ?? row.total_gs ?? 0);
-    row.cost_total_gs = Number(row.cost_total_gs ?? 0);
-    row.delivery_fee_gs = Number(row.delivery_fee_gs ?? 0);
-    row.commission_gs = Number(row.commission_gs ?? Math.max(row.sale_total_gs - row.cost_total_gs - row.delivery_fee_gs, 0));
-    row.items = Array.isArray(row.items) ? row.items : (Array.isArray(row.order_items) ? row.order_items : []);
-    row.provider_emails_list = String(row.provider_emails_list || row.provider_email || '').trim();
-    row.provider_email = String(row.provider_email || '').trim();
-    row.vendor_email = String(row.vendor_email || '').trim();
-    row.created_at = row.created_at || row.assigned_at || row.updated_at || '';
-    return row;
-  }
-
-  function normalizeOrderRows(rows){
-    return (Array.isArray(rows) ? rows : []).map(normalizeOrderRow);
   }
 
   function applyCatalogRows(rows, opts){
@@ -4707,11 +4679,28 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function getItems(){
-    const rows=[...document.querySelectorAll('.orderItemRow')]; const items=[];
+    const rows=[...document.querySelectorAll('.orderItemRow')];
+    const items=[];
+    const currentVendor = String(me?.email || '').trim().toLowerCase();
     rows.forEach(row=>{
-      const sel=row.querySelector('.itemSelect'); const sale=row.querySelector('.ventaInp'); const qty=row.querySelector('.qtyInp');
-      const sku=sel?.value; const s=Number(sale?.value||0); const q=Number(qty?.value||0);
-      if (!sku || s<=0 || q<=0) return; items.push({sku, sale_gs:s, qty:q});
+      const sel=row.querySelector('.itemSelect');
+      const sale=row.querySelector('.ventaInp');
+      const qty=row.querySelector('.qtyInp');
+      const sku=String(sel?.value||'').trim();
+      const saleTotal=Number(sale?.value||0);
+      const q=Math.max(1, Number(qty?.value||0));
+      const p = catalogMap?.[sku];
+      if (!sku || !p || saleTotal<=0 || q<=0) return;
+      const unitSale = Math.round(saleTotal / q);
+      items.push({
+        sku,
+        title: String(p.title || sku),
+        qty: q,
+        price_gs: unitSale,
+        provider_price_gs: Number(p.provider_price_gs || 0),
+        provider_email: String(p.provider_email || '').trim().toLowerCase(),
+        vendor_email: currentVendor || null
+      });
     });
     return items;
   }
@@ -4733,11 +4722,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city = String(o_city?.value || '').trim();
-    const del = getClientCityPrice(city);
+    const del = Number(getClientCityPrice(city) || 0);
     cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
     o_total.value = nf(totalVenta);
     o_delivery.value = nf(del);
-    o_commission.value = nf(totalVenta - (totalProv + del));
+    o_commission.value = nf(Math.max(totalVenta - totalProv, 0));
   }
 
   function resetOrderPrefillFlag(){
@@ -4806,8 +4795,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       setTimeout(()=>{ try { buildCityDropdown(); } catch(_e) {} }, 250);
     }
     if (name === 'products') {
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
     }
     if (name === 'rates') {
       try { loadRates(); } catch(_e) {}
@@ -4826,7 +4814,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     const tok = localStorage.getItem(tokenKey);
     const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
-      email:o_email.value.trim(), obs:o_obs.value.trim(), items:getItems() };
+      email:o_email.value.trim(), obs:o_obs.value.trim(), vendor_email:String(me?.email||'').trim().toLowerCase(), items:getItems() };
    
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
@@ -4861,8 +4849,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         itemsBox.innerHTML='';
         resetOrderPrefillFlag();
         addItemRow();
-        try { buildCityDropdown(); } catch(_e) {}
-        try { recalcOrder(); } catch(_e) {}
        
         // Re-habilitar botón
         isSavingOrder = false;
@@ -4908,6 +4894,28 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   }
 
   // =========================
+  // Pedidos (normalización UI)
+  // =========================
+  function normalizeOrderRecord(o){
+    if (!o || typeof o !== 'object') return o;
+    const saleTotal = Number(o.sale_total_gs ?? o.total_gs ?? 0);
+    const costTotal = Number(o.cost_total_gs ?? o.cost_gs ?? 0);
+    const providerList = String(o.provider_emails_list || o.provider_email || '').trim();
+    const vendorEmail = String(o.vendor_email || o.created_by || '').trim();
+    return {
+      ...o,
+      total_gs: saleTotal,
+      sale_total_gs: saleTotal,
+      cost_total_gs: costTotal,
+      commission_gs: Math.max(saleTotal - costTotal, 0),
+      provider_emails_list: providerList,
+      provider_email: String(o.provider_email || providerList.split(',')[0] || '').trim(),
+      vendor_email: vendorEmail,
+      created_by: vendorEmail || String(o.created_by || '').trim()
+    };
+  }
+
+  // =========================
   // Pedidos (listado) - MODIFICADO CON COLUMNA DE PROVEEDORES
   // =========================
   function refreshOrders(){
@@ -4915,13 +4923,13 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
       ? apiRun.withSuccessHandler(rows=>{
-          lastOrders = normalizeOrderRows(rows||[]);
+          lastOrders=(rows||[]).map(normalizeOrderRecord);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
       : apiRun.withSuccessHandler(rows=>{
-          lastOrders = normalizeOrderRows(rows||[]);
+          lastOrders=(rows||[]).map(normalizeOrderRecord);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
@@ -5017,7 +5025,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${dateShown}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td><td class="right">${nf(fee)}</td>
           <td>${stateSel}</td>
           <td>
@@ -5072,7 +5080,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td>
           <td>${providersHtml}</td> <!-- NUEVA COLUMNA -->
           <td>${state2Sel}</td>
@@ -5164,7 +5172,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
         <td class="right">${nf(o.total_gs)}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
@@ -5400,28 +5408,26 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         kpi_provider_sold.textContent = nf(res.cards.sold);
         kpi_provider_delivered.textContent = nf(res.cards.delivered);
         kpi_provider_canceled.textContent = nf(res.cards.canceled);
-        kpi_provider_profit.textContent = nf(res.cards.profit || 0);
+        kpi_provider_profit.textContent = nf(res.cards.profit);
         kpi_provider_today_profit.textContent = nf(res.cards.delivered_today_profit || 0);
         kpi_provider_range_profit.textContent = nf(res.cards.delivered_range_profit || 0);
         updateProviderLiquidityKPI();
 
-        const providerSeries = Array.isArray(res?.series) ? res.series : [];
-        const labels=providerSeries.map(s=>s.date), values=providerSeries.map(s=>s.value);
+        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const providerPie = res?.pie || {};
-        const pl=Object.keys(providerPie), pv=pl.map(k=>providerPie[k]);
+        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
         });
 
         const tl=document.getElementById('topList'); tl.innerHTML='';
-        ((res&&res.top)||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
         const ml=document.getElementById('mapList'); ml.innerHTML='';
         (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
 
@@ -5456,19 +5462,17 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           document.getElementById('kpi_sum_entregado').textContent = nf(sumaEntregadoTotal);
           kpi_profit.textContent = nf(montoRendir);
         } else {
-          kpi_profit.textContent = nf(res.cards.profit || 0);
+          kpi_profit.textContent = nf(res.cards.profit);
         }
 
-        const providerSeries = Array.isArray(res?.series) ? res.series : [];
-        const labels=providerSeries.map(s=>s.date), values=providerSeries.map(s=>s.value);
+        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const providerPie = res?.pie || {};
-        const pl=Object.keys(providerPie), pv=pl.map(k=>providerPie[k]);
+        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5491,7 +5495,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         }
 
         const tl=document.getElementById('topList'); tl.innerHTML='';
-        ((res&&res.top)||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
         const ml=document.getElementById('mapList'); ml.innerHTML='';
         (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
 
@@ -6855,20 +6859,11 @@ function renderPendingGuidesSimplified() {
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        alert(
-          `DEBUG PRODUCTOS:
-
-` +
-          `Total tabla: ${result?.count ?? 0}
-` +
-          `Visibles para este usuario: ${result?.visibleCount ?? 0}
-` +
-          `Usuario: ${result?.user?.email || '-'} (${result?.user?.role || '-'})`
-        );
+        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + (e.message || e));
+        toast('Error en debug: ' + e.message);
       })
       .debugProducts(tok);
   }
@@ -6876,15 +6871,14 @@ function renderPendingGuidesSimplified() {
   function debugProviderData(){
     const tok = localStorage.getItem(tokenKey);
     apiRun
-      .withSuccessHandler(rows => {
-        console.log('DEBUG PROVEEDOR:', rows);
-        alert(`DEBUG PROVEEDOR:
-
-Registros devueltos: ${Array.isArray(rows) ? rows.length : 0}`);
+      .withSuccessHandler(result => {
+        console.log('DEBUG PROVEEDOR:', result);
+        const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${result.productosProveedor.length}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
+        alert(msg);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + (e.message || e));
+        toast('Error en debug: ' + e.message);
       })
       .debugProviderData(tok);
   }
