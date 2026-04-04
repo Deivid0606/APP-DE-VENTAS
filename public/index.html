@@ -4681,25 +4681,23 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function getItems(){
     const rows=[...document.querySelectorAll('.orderItemRow')];
     const items=[];
-    const currentVendor = String(me?.email || '').trim().toLowerCase();
     rows.forEach(row=>{
       const sel=row.querySelector('.itemSelect');
       const sale=row.querySelector('.ventaInp');
       const qty=row.querySelector('.qtyInp');
       const sku=String(sel?.value||'').trim();
-      const saleTotal=Number(sale?.value||0);
-      const q=Math.max(1, Number(qty?.value||0));
-      const p = catalogMap?.[sku];
-      if (!sku || !p || saleTotal<=0 || q<=0) return;
-      const unitSale = Math.round(saleTotal / q);
+      const priceGs=Number(sale?.value||0);
+      const qtyNum=Number(qty?.value||0);
+      const product=catalogMap?.[sku]||null;
+      if (!sku || !product || priceGs<=0 || qtyNum<=0) return;
       items.push({
         sku,
-        title: String(p.title || sku),
-        qty: q,
-        price_gs: unitSale,
-        provider_price_gs: Number(p.provider_price_gs || 0),
-        provider_email: String(p.provider_email || '').trim().toLowerCase(),
-        vendor_email: currentVendor || null
+        title: String(product.title||product.name||sku),
+        qty: qtyNum,
+        price_gs: priceGs,
+        provider_price_gs: Number(product.provider_price_gs||product.real_cost_gs||product.real_cost||0),
+        provider_email: String(product.provider_email||'').trim().toLowerCase(),
+        vendor_email: String(me?.role==='VENDEDOR' ? (me?.email||'') : '').trim().toLowerCase()
       });
     });
     return items;
@@ -4722,11 +4720,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city = String(o_city?.value || '').trim();
-    const del = Number(getClientCityPrice(city) || 0);
+    const del = getClientCityPrice(city);
     cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
     o_total.value = nf(totalVenta);
     o_delivery.value = nf(del);
-    o_commission.value = nf(Math.max(totalVenta - totalProv, 0));
+    o_commission.value = nf(totalVenta - (totalProv + del));
   }
 
   function resetOrderPrefillFlag(){
@@ -4814,7 +4812,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     const tok = localStorage.getItem(tokenKey);
     const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
-      email:o_email.value.trim(), obs:o_obs.value.trim(), vendor_email:String(me?.email||'').trim().toLowerCase(), items:getItems() };
+      email:o_email.value.trim(), obs:o_obs.value.trim(), items:getItems() };
    
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
@@ -4894,30 +4892,25 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   }
 
   // =========================
-  // Pedidos (normalización UI)
+  // Pedidos (listado) - MODIFICADO CON COLUMNA DE PROVEEDORES
   // =========================
   function normalizeOrderRecord(o){
-    if (!o || typeof o !== 'object') return o;
-    const saleTotal = Number(o.sale_total_gs ?? o.total_gs ?? 0);
-    const costTotal = Number(o.cost_total_gs ?? o.cost_gs ?? 0);
-    const providerList = String(o.provider_emails_list || o.provider_email || '').trim();
-    const vendorEmail = String(o.vendor_email || o.created_by || '').trim();
+    const saleTotal = Number(o?.sale_total_gs ?? o?.total_gs ?? 0);
+    const costTotal = Number(o?.cost_total_gs ?? o?.provider_total_gs ?? o?.cost_gs ?? 0);
+    const deliveryFee = Number(o?.delivery_fee_gs ?? o?.delivery_gs ?? 0);
+    const commission = Number(o?.commission_gs ?? Math.max(0, saleTotal - costTotal - deliveryFee));
     return {
       ...o,
       total_gs: saleTotal,
       sale_total_gs: saleTotal,
       cost_total_gs: costTotal,
-      commission_gs: Math.max(saleTotal - costTotal, 0),
-      provider_emails_list: providerList,
-      provider_email: String(o.provider_email || providerList.split(',')[0] || '').trim(),
-      vendor_email: vendorEmail,
-      created_by: vendorEmail || String(o.created_by || '').trim()
+      delivery_fee_gs: deliveryFee,
+      commission_gs: commission,
+      vendor_email: String(o?.vendor_email || o?.created_by || ''),
+      provider_emails_list: String(o?.provider_emails_list || o?.provider_email || '')
     };
   }
 
-  // =========================
-  // Pedidos (listado) - MODIFICADO CON COLUMNA DE PROVEEDORES
-  // =========================
   function refreshOrders(){
     const tok=localStorage.getItem(tokenKey);
     const filters = getCurrentOrdersFilters();
@@ -5025,7 +5018,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${dateShown}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td><td class="right">${nf(fee)}</td>
           <td>${stateSel}</td>
           <td>
@@ -5080,7 +5073,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td>
           <td>${providersHtml}</td> <!-- NUEVA COLUMNA -->
           <td>${state2Sel}</td>
@@ -5172,7 +5165,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
         <td class="right">${nf(o.total_gs)}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
