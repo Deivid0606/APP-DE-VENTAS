@@ -4679,28 +4679,61 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function getItems(){
-    const vendorEmail = String(me?.email || '').trim().toLowerCase();
-    const items=[];
-    [...document.querySelectorAll('.orderItemRow')].forEach(row=>{
+    const rows=[...document.querySelectorAll('.orderItemRow')]; const items=[];
+    rows.forEach(row=>{
       const sel=row.querySelector('.itemSelect');
       const sale=row.querySelector('.ventaInp');
       const qty=row.querySelector('.qtyInp');
       const sku=String(sel?.value||'').trim();
-      const saleTotal=Number(sale?.value||0);
+      const s=Number(sale?.value||0);
       const q=Number(qty?.value||0);
-      if (!sku || saleTotal<=0 || q<=0) return;
-      const cat = catalogMap?.[sku] || {};
+      const product = sku ? (catalogMap[sku] || {}) : {};
+      if (!sku || s<=0 || q<=0) return;
       items.push({
         sku,
-        title: String(cat.title || sel?.selectedOptions?.[0]?.textContent || sku).trim(),
+        title: String(product.title || sku),
         qty: q,
-        price_gs: saleTotal,
-        provider_price_gs: Number(cat.provider_price_gs || 0),
-        provider_email: String(cat.provider_email || '').trim().toLowerCase(),
-        vendor_email: vendorEmail
+        price_gs: s,
+        provider_price_gs: Number(product.provider_price_gs || 0),
+        provider_email: String(product.provider_email || '').trim().toLowerCase(),
+        vendor_email: String(me?.email || '').trim().toLowerCase()
       });
     });
     return items;
+  }
+
+  function effectiveDeliveryFee(order){
+    const direct = Number(order?.delivery_fee_gs || order?.delivery_cost || 0);
+    if (direct > 0) return direct;
+    const city = String(order?.city || '').trim();
+    return city ? Number(getClientCityPrice(city) || 0) : 0;
+  }
+
+  function effectiveTotal(order){
+    return Number(order?.total_gs || order?.sale_total_gs || 0);
+  }
+
+  function effectiveCost(order){
+    if (Number(order?.cost_total_gs || 0) > 0) return Number(order.cost_total_gs || 0);
+    const items = Array.isArray(order?.items) ? order.items : [];
+    return items.reduce((sum,it)=>sum + Number(it.qty||0) * Number(it.provider_price_gs || it.cost_price || 0), 0);
+  }
+
+  function effectiveCommission(order){
+    const total = effectiveTotal(order);
+    const cost = effectiveCost(order);
+    const fee = effectiveDeliveryFee(order);
+    return Math.max(total - cost - fee, 0);
+  }
+
+  function normalizeOrderForUI(order){
+    const o = Object.assign({}, order || {});
+    o.total_gs = effectiveTotal(o);
+    o.cost_total_gs = effectiveCost(o);
+    o.delivery_fee_gs = effectiveDeliveryFee(o);
+    o.commission_gs = effectiveCommission(o);
+    o.vendor_email = o.vendor_email || o.created_by || '';
+    return o;
   }
  
   function recalcOrder(){
@@ -4717,7 +4750,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       const sku=sel?.value||''; const provUnit=Number(catalogMap[sku]?.provider_price_gs||0);
       if (provSpan) provSpan.textContent=nf(provUnit);
       const s=Number(sale?.value||0); const q=Number(qty?.value||0);
-      totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
+      totalVenta+=s*q; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city = String(o_city?.value || '').trim();
     const del = getClientCityPrice(city);
@@ -4812,7 +4845,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     const tok = localStorage.getItem(tokenKey);
     const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
-      email:o_email.value.trim(), obs:o_obs.value.trim(), delivery_fee_gs:Number(String(o_delivery.value||'0').replace(/[^\d]/g,''))||0, items:getItems() };
+      email:o_email.value.trim(), obs:o_obs.value.trim(), items:getItems() };
    
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
@@ -4833,7 +4866,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     apiRun
       .withSuccessHandler((res)=>{
-        toast(`✅ Pedido guardado${res?.id?` #${res.id}`:''}`);
+        toast(`✅ Pedido guardado${res?.id ? ' #' + res.id : ''}`);
         refreshOrders();
         refreshDashboard();
        
@@ -4899,13 +4932,13 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
       ? apiRun.withSuccessHandler(rows=>{
-          lastOrders=rows||[];
+          lastOrders=(rows||[]).map(normalizeOrderForUI);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
       : apiRun.withSuccessHandler(rows=>{
-          lastOrders=rows||[];
+          lastOrders=(rows||[]).map(normalizeOrderForUI);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
@@ -5100,9 +5133,8 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
 
       let colVal;
       if (meRole === 'DELIVERY') {
-        const feeAsentado = Number(o.delivery_fee_gs||0);
-        colVal = feeAsentado > 0 ? feeAsentado : (rateMap[norm(o.city)] || 0);
-      } else { colVal = Number(o.commission_gs||0); }
+        colVal = effectiveDeliveryFee(o);
+      } else { colVal = effectiveCommission(o); }
 
       // ===== NUEVO: Mostrar proveedores para ADMIN, VENDEDOR, PROVEEDOR (con el nuevo formato) =====
       const providersHtml = o.provider_emails_list
@@ -5632,7 +5664,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       /* === NUEVO: KPIs de Pago de comisiones (cantidad y suma de comisiones) === */
       const pcCnt = visibles.length;
       let pcSum = 0;
-      visibles.forEach(o => { pcSum += Number(o.commission_gs || 0); });
+      visibles.forEach(o => { pcSum += effectiveCommission(o); });
       const kCntEl = document.getElementById('pc_k_cnt');
       const kSumEl = document.getElementById('pc_k_sum');
       if (kCntEl) kCntEl.textContent = nf(pcCnt);
@@ -5651,7 +5683,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         tr.innerHTML=`
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
           <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
+          <td>${o.assigned_delivery||''}</td><td class="right">${nf(effectiveTotal(o))}</td><td class="right">${nf(effectiveCommission(o))}</td>
           <td>${stateSel}</td>
           <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
           <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
@@ -5734,12 +5766,23 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
 
       apiRun
         .withSuccessHandler(rows => {
-          let visibles = rows || [];
-          if (providerFilter) {
-            visibles = visibles.filter(o => String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
-          }
-          if (onlyNormalized === 'PENDIENTE') visibles = visibles.filter(o => !o.commission_paid);
-          if (onlyNormalized === 'PAGADO') visibles = visibles.filter(o => !!o.commission_paid);
+          const visibles = (rows || []).map(x => Object.assign({}, x.orders || {}, {
+            id: x.order_id || x.id,
+            created_at: x.created_at || x.orders?.created_at,
+            city: x.orders?.city || '',
+            customer_name: x.orders?.customer_name || '',
+            vendor_email: x.vendor_email || x.orders?.vendor_email || vendorEmail,
+            assigned_delivery: x.orders?.assigned_delivery || '',
+            total_gs: Number(x.orders?.sale_total_gs || x.orders?.total_gs || 0),
+            cost_total_gs: Number(x.orders?.cost_total_gs || 0),
+            delivery_fee_gs: Number(x.orders?.delivery_fee_gs || 0),
+            commission_gs: Number(x.amount_gs || 0),
+            commission_paid: !!x.paid,
+            paid_at: x.paid_at || null,
+            status: x.order_status || x.orders?.status || 'ENTREGADO',
+            provider_emails_list: x.orders?.provider_emails_list || '',
+            items: x.orders?.order_items || x.orders?.items || []
+          })).filter(o => !providerFilter || String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
           renderCommissionsTable(visibles);
         })
         .withFailureHandler(e => toast(e.message || e))
@@ -5749,7 +5792,6 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       document.getElementById('vendor_email_box').classList.add('hidden');
       document.getElementById('vendor_email_admin_box').classList.remove('hidden');
       document.getElementById('commissions_title').textContent = '💰 Pago de comisiones';
-      loadVendorsForCommissionsFilter();
       const bulkActions = document.getElementById('bulkActions');
       if (bulkActions) bulkActions.classList.remove('hidden');
       const activeVendor = (document.getElementById('pc_vendor_admin')?.value || '').trim();
@@ -6399,11 +6441,39 @@ function renderPendingGuidesSimplified() {
   // Neto a rendir calculado en Cierres (para Control de Rendición)
   window.currentRendicionMonto = 0;
 
+  function formatOrderGuideText(order){
+    const o = normalizeOrderForUI(order || {});
+    const lines = [];
+    lines.push(`Pedido: ${o.order_code || o.external_ref || o.id || ''}`);
+    lines.push(`Vendedor: ${o.vendor_email || o.created_by || ''}`);
+    lines.push(`Cliente: ${o.customer_name || ''}`);
+    lines.push(`Teléfono: ${o.phone || ''}`);
+    lines.push(`Ciudad: ${o.city || ''}`);
+    lines.push(`Calle: ${o.street || ''}`);
+    lines.push(`Barrio: ${o.district || ''}`);
+    lines.push(`Email: ${o.email || ''}`);
+    lines.push('');
+    lines.push('Items:');
+    const items = Array.isArray(o.items) ? o.items : [];
+    items.forEach(it => {
+      const price = Number(it.price_gs || it.sale_gs || 0);
+      lines.push(`- ${it.title || it.sku || ''} — Cant: ${Number(it.qty || 0)} — Precio: ${nf(price)} Gs`);
+    });
+    lines.push(`Total: ${nf(o.total_gs || 0)} Gs`);
+    return lines.join('
+');
+  }
+
+  function getOrderForGuide(orderId){
+    return (lastOrders || []).find(o => String(o.id) === String(orderId));
+  }
+
   function abrirGuiaLimpia(orderId) {
-    const cached = findOrderInCaches(orderId);
-    if (cached) {
-      const text = formatGuideTextFromOrder(cached);
-      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    if (!orderId) return;
+    const localOrder = getOrderForGuide(orderId);
+    if (localOrder) {
+      const textGuide = formatOrderGuideText(localOrder);
+      const blob = new Blob([textGuide], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank');
       setTimeout(() => URL.revokeObjectURL(url), 10000);
@@ -6411,23 +6481,22 @@ function renderPendingGuidesSimplified() {
     }
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
-    toast('📋 Generando guía...');
-    apiRun
-      .withSuccessHandler(function(resultado) {
-        if (resultado.success && resultado.text) {
-          const blob = new Blob([resultado.text], { type: 'text/plain;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          window.open(url, '_blank');
-          setTimeout(() => URL.revokeObjectURL(url), 10000);
-        }
-      })
-      .withFailureHandler(function(error) { toast('Error: ' + error.message); })
-      .getGuideCleanText(tok, orderId);
+    apiRun.withSuccessHandler(function(resultado) {
+      if (resultado.success && resultado.text) {
+        const blob = new Blob([resultado.text], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }
+    }).withFailureHandler(function(error) {
+      toast('Error: ' + error.message);
+    }).getGuideCleanText(tok, orderId);
   }
 
   function copiarGuiaLimpia(orderId) {
-    const cached = findOrderInCaches(orderId);
-    const copyText = (txt) => navigator.clipboard.writeText(txt)
+    const localOrder = getOrderForGuide(orderId);
+    const copyText = localOrder ? formatOrderGuideText(localOrder) : null;
+    const doCopy = (txt) => navigator.clipboard.writeText(txt)
       .then(() => toast('✅ Guía copiada'))
       .catch(() => {
         const textarea = document.createElement('textarea');
@@ -6438,52 +6507,12 @@ function renderPendingGuidesSimplified() {
         document.body.removeChild(textarea);
         toast('✅ Texto copiado ✓');
       });
-    if (cached) { copyText(formatGuideTextFromOrder(cached)); return; }
+    if (copyText) { doCopy(copyText); return; }
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
-    apiRun
-      .withSuccessHandler(function(resultado) { if (resultado.success && resultado.text) copyText(resultado.text); })
-      .withFailureHandler(error => toast('Error: ' + error.message))
-      .getGuideCleanText(tok, orderId);
-  }
-
-
-  function resolveOrderDeliveryCharge(order){
-    const direct = Number(order?.delivery_fee_gs || order?.delivery_cost || 0);
-    if (direct > 0) return direct;
-    const city = String(order?.city || '').trim().toLowerCase();
-    const found = (clientCityPrices||[]).find(c => String(c.city||'').trim().toLowerCase() === city);
-    return Number(found?.price_gs || found?.price || 0);
-  }
-
-  function resolveOrderTotal(order){
-    return Number(order?.total_gs || order?.sale_total_gs || 0);
-  }
-
-  function formatGuideTextFromOrder(order){
-    if (!order) return '';
-    const items = Array.isArray(order.items) ? order.items : [];
-    const lines = [];
-    lines.push(`Pedido: ${order.id || ''}`);
-    lines.push(`Vendedor: ${order.vendor_email || order.created_by || ''}`);
-    lines.push(`Cliente: ${order.customer_name || ''}`);
-    lines.push(`Teléfono: ${order.phone || ''}`);
-    lines.push(`Ciudad: ${order.city || ''}`);
-    lines.push(`Calle: ${order.street || ''}`);
-    lines.push(`Barrio: ${order.district || ''}`);
-    lines.push(`Email: ${order.email || ''}`);
-    if (order.obs) lines.push(`Obs: ${order.obs}`);
-    lines.push('');
-    lines.push('Items:');
-    items.forEach(it => {
-      lines.push(`- ${it.title || it.sku || ''} — Cant: ${it.qty || 0} — Precio: ${nf(Number(it.price_gs || 0))} Gs`);
-    });
-    lines.push(`Total: ${nf(resolveOrderTotal(order))} Gs`);
-    return lines.join('\n');
-  }
-
-  function findOrderInCaches(orderId){
-    return (lastOrders||[]).find(o=>String(o.id)===String(orderId)) || (assignableOrders||[]).find(o=>String(o.id)===String(orderId)) || null;
+    apiRun.withSuccessHandler(function(resultado) {
+      if (resultado.success && resultado.text) doCopy(resultado.text);
+    }).withFailureHandler(error => toast('Error: ' + error.message)).getGuideCleanText(tok, orderId);
   }
 
   // =========================
@@ -6622,24 +6651,35 @@ function renderPendingGuidesSimplified() {
 
   function generateBulkTXT() {
     const allSelected = [...selectedOrders, ...selectedGuides];
+   
     if (allSelected.length === 0) {
       toast('Seleccioná al menos una guía');
       return;
     }
+   
     if (allSelected.length > MAX_BULK_GUIDES) {
       toast(`Máximo ${MAX_BULK_GUIDES} guías`);
       return;
     }
+   
+    if (!confirm(`¿Generar TXT con ${allSelected.length} guías?`)) return;
+   
+    const tok = localStorage.getItem(tokenKey);
+    toast(`📄 Generando TXT...`);
+   
     const txtBtn = document.getElementById('bulkTxtBtn');
     if (txtBtn) txtBtn.disabled = true;
-    const cachedOrders = allSelected.map(id => findOrderInCaches(id)).filter(Boolean);
-    if (cachedOrders.length === allSelected.length) {
-      const textOut = cachedOrders.map(formatGuideTextFromOrder).join('
+   
+    const selectedTexts = allSelected.map(id => {
+      const localOrder = getOrderForGuide(id);
+      return localOrder ? formatOrderGuideText(localOrder) : null;
+    }).filter(Boolean);
+    if (selectedTexts.length === allSelected.length) {
+      const blob = new Blob([selectedTexts.join('
 
 ----------------------------------------
 
-');
-      const blob = new Blob([textOut], { type: 'text/plain;charset=utf-8' });
+')], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -6648,11 +6688,11 @@ function renderPendingGuidesSimplified() {
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast('✅ TXT descargado');
+      toast(`✅ TXT descargado`);
       if (txtBtn) txtBtn.disabled = false;
       return;
     }
-    const tok = localStorage.getItem(tokenKey);
+
     apiRun
       .withSuccessHandler(function(result) {
         if (result && result.success && result.text) {
@@ -6660,12 +6700,12 @@ function renderPendingGuidesSimplified() {
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `guias_${new Date().toISOString().slice(0,10)}.txt`;
+          a.download = result.fileName || `guias_${new Date().toISOString().slice(0,10)}.txt`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           setTimeout(() => URL.revokeObjectURL(url), 1000);
-          toast('✅ TXT descargado');
+          toast(`✅ TXT descargado`);
         } else {
           toast('❌ Error al generar TXT');
         }
@@ -7043,7 +7083,7 @@ function renderPendingGuidesSimplified() {
       if (filters.providerEmail) {
         apiRun
           .withSuccessHandler(orders => {
-            lastOrders = orders;
+            lastOrders = (orders||[]).map(normalizeOrderForUI);
             renderOrdersLast();
             toast(`✅ ${orders.length} pedidos encontrados`);
           })
@@ -7052,7 +7092,7 @@ function renderPendingGuidesSimplified() {
       } else {
         apiRun
           .withSuccessHandler(orders => {
-            lastOrders = orders;
+            lastOrders = (orders||[]).map(normalizeOrderForUI);
             renderOrdersLast();
             toast('✅ Filtros aplicados');
           })
@@ -8471,7 +8511,7 @@ function renderPendingGuidesSimplified() {
     const kCntEl = document.getElementById('pc_k_cnt');
     const kSumEl = document.getElementById('pc_k_sum');
     let sum = 0;
-    (rows||[]).forEach(o=>{ sum += Number(o.commission_gs || 0); });
+    (rows||[]).forEach(o=>{ sum += effectiveCommission(o); });
     if (kCntEl) kCntEl.textContent = nf((rows||[]).length);
     if (kSumEl) kSumEl.textContent = nf(sum);
 
@@ -8490,7 +8530,7 @@ function renderPendingGuidesSimplified() {
       tr.innerHTML=`
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
+        <td>${o.assigned_delivery||''}</td><td class="right">${nf(effectiveTotal(o))}</td><td class="right">${nf(effectiveCommission(o))}</td>
         <td>${stateSel}</td>
         <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
         <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
