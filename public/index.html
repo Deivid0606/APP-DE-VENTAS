@@ -1430,7 +1430,7 @@
     <button id="navLogin" class="btn primary" onclick="openLogin()">Login</button>
     <button id="navDash"  class="btn hidden" onclick="show('dashboard')">Dashboard</button>
     <button id="navNews"  class="btn hidden" onclick="show('news')">Novedades</button>
-   <button id="navChat" class="btn hidden" style="display:none!important" onclick="return false;">Chat</button>
+   <button id="navChat" class="btn hidden" onclick="show('chat'); loadChat()">Chat</button>
 
     <!-- === NUEVO: pestaña Pedidos con guías (solo ADMIN / DESPACHANTE) === -->
     <button id="navWithGuides" class="btn hidden" onclick="show('withGuides')">Pedidos con guías</button>
@@ -1440,9 +1440,9 @@
       🏆 Ranking Delivery
     </button>
 
-    <button id="navProd"  class="btn hidden" onclick="show('products'); clearCatalogCache(); loadCatalog(true)">Productos</button>
+    <button id="navProd"  class="btn hidden" onclick="show('products')">Productos</button>
     <button id="navEarnings" class="btn hidden" onclick="show('earnings'); loadEarnings()">Ganancias</button>
-    <button id="navOrder" class="btn hidden" onclick="show('order'); buildCityDropdown(); setTimeout(()=>{ try { recalcOrder(); } catch(_e){} }, 80)">Cargar pedido</button>
+    <button id="navOrder" class="btn hidden" onclick="show('order')">Cargar pedido</button>
     <button id="navOrders"class="btn hidden" onclick="show('orders')">Pedidos</button>
 
     <!-- 🛒 NUEVO: Pedidos de Shopify + WhatsApp -->
@@ -3140,16 +3140,12 @@
 
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
-    if (name !== 'chat') stopChatPolling();
-    if (name !== 'mapa') stopMapPolling();
     try { onShowView(name); } catch(_e) {}
   };
 
   // sello de última actualización
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
-  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
-  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} } });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3178,7 +3174,7 @@
    
     // El resto queda igual...
     vis('navNews', isAuthed);
-   vis('navChat', isAuthed);
+   vis('navChat', false);
 
     // === NUEVO: botón visible solo para ADMIN y DESPACHANTE
     vis('navWithGuides', isAuthed && (role==='ADMIN' || role==='DESPACHANTE' || role==='PROVEEDOR'));
@@ -3227,7 +3223,9 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
   }
  
-  const openLogin = ()=>{ me=null; setUserBoxUI(null); setNavForAuth(false); document.getElementById('roleChip').textContent='';
+  const openLogin = ()=>{ 
+    try { clearCatalogCache(); } catch(_e) {}
+    me=null; setUserBoxUI(null); setNavForAuth(false); document.getElementById('roleChip').textContent='';
     show('auth');
     // precargar email recordado
     const saved = localStorage.getItem(emailKey)||''; if (saved){ li_email.value=saved; li_saveemail.checked=true; }
@@ -3248,13 +3246,18 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     else localStorage.removeItem(emailKey);
 
     google.script.run.withSuccessHandler(res=>{
+        try { clearCatalogCache(); } catch(_e) {}
         localStorage.setItem(tokenKey, res.session.token);
         init();
       })
       .withFailureHandler(e=>toast(e.message||e))
       .login(li_email.value.trim(), li_pass.value, remember);
   }
-  function logout(){ try { clearCatalogCache(); } catch(_e){} localStorage.removeItem(tokenKey); openLogin(); }
+  function logout(){ 
+    try { clearCatalogCache(); } catch(_e) {}
+    localStorage.removeItem(tokenKey); 
+    openLogin(); 
+  }
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3705,11 +3708,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   let chatPollTimer = null;
   let chatPingTimer = null;
 
-  function stopChatPolling(){
-    try { if (chatPingTimer){ clearInterval(chatPingTimer); chatPingTimer = null; } } catch(_e) {}
-    try { if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; } } catch(_e) {}
-  }
-
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
     b = String(b||'').trim().toLowerCase();
@@ -4021,6 +4019,19 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rows: Array.isArray(rows) ? rows : []
       }));
     }catch(_e){}
+  }
+
+  function clearCatalogCache(){
+    try{
+      products = [];
+      catalogMap = {};
+      catalogLoadedAt = 0;
+      catalogLoadPromise = null;
+      const key = getCatalogCacheKey();
+      if (key) localStorage.removeItem(key);
+    }catch(_e){}
+    const stat = document.getElementById('catalogStatus');
+    if (stat) stat.textContent = 'Catálogo limpiado';
   }
 
   function applyCatalogRows(rows, opts){
@@ -4614,36 +4625,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // Ciudades (cliente)
   // =========================
   function buildCityDropdown(){
-    const tok = localStorage.getItem(tokenKey);
-    const sel = o_city;
-    if (!tok || !sel) return;
-    const current = String(sel.value || '').trim();
-    google.script.run
-      .withSuccessHandler(rows=>{
-        const clean = Array.isArray(rows) ? rows.filter(r => String(r?.city || '').trim()) : [];
-        const seen = new Set();
-        clientCityPrices = clean.filter(r=>{
-          const key = String(r.city || '').trim().toLowerCase();
-          if (!key || seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        }).sort((a,b)=> String(a.city||'').localeCompare(String(b.city||''), 'es', { sensitivity:'base' }));
-
-        sel.innerHTML = '<option value="">Selecciona ciudad…</option>' + clientCityPrices.map(r=>{
-          const city = String(r.city || '').trim();
-          return `<option value="${city}">${city}</option>`;
-        }).join('');
-
-        if (current && clientCityPrices.some(r => String(r.city||'').trim().toLowerCase() === current.toLowerCase())) {
-          sel.value = clientCityPrices.find(r => String(r.city||'').trim().toLowerCase() === current.toLowerCase()).city;
-        } else if (!sel.value && clientCityPrices.length) {
-          sel.value = String(clientCityPrices[0].city || '').trim();
-        }
-        sel.onchange = ()=>recalcOrder();
-        try { recalcOrder(); } catch(_e) {}
-      })
-      .withFailureHandler(e=>console.error('Error ciudades:', e))
-      .getDeliveryClientPrices(tok);
+    const tok=localStorage.getItem(tokenKey);
+    google.script.run.withSuccessHandler(rows=>{
+      clientCityPrices=rows||[];
+      const sel=o_city; sel.innerHTML='<option value="">Selecciona ciudad…</option>'+rows.map(r=>`<option>${r.city}</option>`).join('');
+    }).getDeliveryClientPrices(tok);
   }
 
   // =========================
@@ -4715,9 +4701,9 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city=(o_city.value||'').trim();
-    const found=(clientCityPrices||[]).find(c=>String(c.city||'').trim().toLowerCase()===city.toLowerCase());
-    const del=found?Number(found.price_gs||0):0;
-    cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
+    const found=(clientCityPrices||[]).find(c=>String(c.city||'').toLowerCase()===city.toLowerCase());
+    const del=found?Number(found.price||0):0;
+    cityHint.textContent = del?`Delivery cobrado: ${nf(del)} Gs`:'';
     o_total.value=nf(totalVenta); o_delivery.value=nf(del);
     o_commission.value = nf(totalVenta - (totalProv + del));
   }
@@ -4779,28 +4765,13 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
   }
 
-
-  function clearCatalogCache(){
-    products = [];
-    catalogMap = {};
-    catalogLoadedAt = 0;
-    catalogLoadPromise = null;
-    try { localStorage.removeItem(getCatalogCacheKey()); } catch(_e){}
-  }
-
   function onShowView(name){
     if (name === 'order') {
-      buildCityDropdown();
       ensureOrderFormReady();
-      setTimeout(()=>{ try { recalcOrder(); } catch(_e) {} }, 80);
     }
     if (name === 'products') {
       clearCatalogCache();
       loadCatalog(true);
-    }
-    if (name === 'rates') {
-      try { loadRates(); } catch(_e) {}
-      try { loadClientPrices(); } catch(_e) {}
     }
   }
 
@@ -4849,9 +4820,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         o_obs.value='';
         itemsBox.innerHTML='';
         resetOrderPrefillFlag();
-        buildCityDropdown();
         addItemRow();
-        setTimeout(()=>{ try { recalcOrder(); } catch(_e) {} }, 50);
        
         // Re-habilitar botón
         isSavingOrder = false;
@@ -5581,7 +5550,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     document.getElementById('clientPricesAdminBox').classList.toggle('hidden', me?.role!=='ADMIN');
     google.script.run.withSuccessHandler(rows=>{
       const tb=document.getElementById('client_prices_tbody'); if (!tb) return; tb.innerHTML='';
-      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price_gs || 0)}</td>`; tb.appendChild(tr); });
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price)}</td>`; tb.appendChild(tr); });
       markUpdated();
     }).withFailureHandler(e=>toast(e.message||e)).getDeliveryClientPrices(tok);
   }
@@ -6841,13 +6810,9 @@ function renderPendingGuidesSimplified() {
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
         alert(
-          `DEBUG PRODUCTOS:
-
-` +
-          `Total tabla: ${result?.count ?? 0}
-` +
-          `Visibles para este usuario: ${result?.visibleCount ?? 0}
-` +
+          `DEBUG PRODUCTOS:\n\n` +
+          `Total tabla: ${result?.count ?? 0}\n` +
+          `Visibles para este usuario: ${result?.visibleCount ?? 0}\n` +
           `Usuario: ${result?.user?.email || '-'} (${result?.user?.role || '-'})`
         );
       })
