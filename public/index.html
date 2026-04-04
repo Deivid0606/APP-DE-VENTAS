@@ -4686,18 +4686,20 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       const sale=row.querySelector('.ventaInp');
       const qty=row.querySelector('.qtyInp');
       const sku=String(sel?.value||'').trim();
-      const priceGs=Number(sale?.value||0);
-      const qtyNum=Number(qty?.value||0);
-      const product=catalogMap?.[sku]||null;
-      if (!sku || !product || priceGs<=0 || qtyNum<=0) return;
+      const saleTotal=Number(sale?.value||0);
+      const q=Math.max(1, Number(qty?.value||0));
+      const product = catalogMap?.[sku] || null;
+      const providerUnit = Number(product?.provider_price_gs || 0);
+      if (!sku || saleTotal<=0 || q<=0 || !product) return;
+      const unitSale = Math.round(saleTotal / q);
       items.push({
         sku,
-        title: String(product.title||product.name||sku),
-        qty: qtyNum,
-        price_gs: priceGs,
-        provider_price_gs: Number(product.provider_price_gs||product.real_cost_gs||product.real_cost||0),
-        provider_email: String(product.provider_email||'').trim().toLowerCase(),
-        vendor_email: String(me?.role==='VENDEDOR' ? (me?.email||'') : '').trim().toLowerCase()
+        title: String(product.title || product.name || sku),
+        qty: q,
+        price_gs: unitSale,
+        provider_price_gs: providerUnit,
+        provider_email: String(product.provider_email || '').trim().toLowerCase(),
+        vendor_email: String(me?.role === 'VENDEDOR' ? (me?.email || '') : '').trim().toLowerCase()
       });
     });
     return items;
@@ -4891,38 +4893,37 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     }).withFailureHandler(e=>toast(e.message||e)).getGuideText(tok,orderId);
   }
 
-  // =========================
-  // Pedidos (listado) - MODIFICADO CON COLUMNA DE PROVEEDORES
-  // =========================
-  function normalizeOrderRecord(o){
+  function normalizeOrderForUI(o){
     const saleTotal = Number(o?.sale_total_gs ?? o?.total_gs ?? 0);
-    const costTotal = Number(o?.cost_total_gs ?? o?.provider_total_gs ?? o?.cost_gs ?? 0);
+    const costTotal = Number(o?.cost_total_gs ?? o?.provider_cost_total_gs ?? 0);
     const deliveryFee = Number(o?.delivery_fee_gs ?? o?.delivery_gs ?? 0);
-    const commission = Number(o?.commission_gs ?? Math.max(0, saleTotal - costTotal - deliveryFee));
+    const commission = Number(o?.commission_gs ?? Math.max(saleTotal - costTotal, 0));
     return {
       ...o,
       total_gs: saleTotal,
       sale_total_gs: saleTotal,
       cost_total_gs: costTotal,
-      delivery_fee_gs: deliveryFee,
       commission_gs: commission,
-      vendor_email: String(o?.vendor_email || o?.created_by || ''),
-      provider_emails_list: String(o?.provider_emails_list || o?.provider_email || '')
+      provider_emails_list: String(o?.provider_emails_list || o?.provider_email || '').trim(),
+      vendor_email: String(o?.vendor_email || o?.created_by || '').trim()
     };
   }
 
+  // =========================
+  // Pedidos (listado) - MODIFICADO CON COLUMNA DE PROVEEDORES
+  // =========================
   function refreshOrders(){
     const tok=localStorage.getItem(tokenKey);
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
       ? apiRun.withSuccessHandler(rows=>{
-          lastOrders=(rows||[]).map(normalizeOrderRecord);
+          lastOrders=(rows||[]).map(normalizeOrderForUI);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
       : apiRun.withSuccessHandler(rows=>{
-          lastOrders=(rows||[]).map(normalizeOrderRecord);
+          lastOrders=(rows||[]).map(normalizeOrderForUI);
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
@@ -5018,7 +5019,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${dateShown}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td><td class="right">${nf(fee)}</td>
           <td>${stateSel}</td>
           <td>
@@ -5073,7 +5074,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td>
           <td>${providersHtml}</td> <!-- NUEVA COLUMNA -->
           <td>${state2Sel}</td>
@@ -5165,7 +5166,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
         <td class="right">${nf(o.total_gs)}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
@@ -6259,7 +6260,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     if (Array.isArray(lastOrders) && lastOrders.length){
       afterOrders(lastOrders);
     } else {
-      apiRun.withSuccessHandler(rows=>{ lastOrders=rows; afterOrders(rows); })
+      apiRun.withSuccessHandler(rows=>{ lastOrders=(rows||[]).map(normalizeOrderForUI); afterOrders(lastOrders); })
         .withFailureHandler(e=>toast(e.message||e)).listOrders(tok);
     }
   }
@@ -6939,7 +6940,7 @@ function renderPendingGuidesSimplified() {
         <td>${o.id}</td>
         <td>${o.city||''}</td>
         <td>${o.customer_name||''}</td>
-        <td>${o.created_by||''}</td>
+        <td>${o.vendor_email||o.created_by||''}</td>
         <td>${providersHtml}</td>
         <td>${s2Sel}</td>
         <td>
