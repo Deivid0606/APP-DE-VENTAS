@@ -5,24 +5,12 @@
 <base target="_top">
 <title>EL-ECOMMERCE DCANP GROUP</title>
 <script>
-/**
- * Shim para emular google.script.run en Vercel
- * Convierte: google.script.run.withSuccessHandler(fn).withFailureHandler(err).miFuncion(a,b)
- * en: fetch("/api/gas", {fn:"miFuncion", args:[a,b]})
- */
-(function initGoogleScriptRunShim(){
-  // Si estamos dentro de Apps Script, google.script.run ya existe: no tocamos nada.
-  if (window.google && window.google.script && window.google.script.run) return;
-
-  window.google = window.google || {};
-  window.google.script = window.google.script || {};
-
-  function makeRunner() {
+(function initSupabaseApiRunner(){
+  function makeApiRunner() {
     let onSuccess = null;
     let onFailure = null;
 
     const runner = {
-      // IMPORTANTE: devolver el PROXY para que el encadenado no se rompa
       withSuccessHandler(cb){ onSuccess = cb; return proxy; },
       withFailureHandler(cb){ onFailure = cb; return proxy; },
     };
@@ -30,48 +18,41 @@
     const proxy = new Proxy(runner, {
       get(target, prop) {
         if (prop in target) return target[prop];
-
         return async (...args) => {
           try {
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 8000);
+            const timeout = setTimeout(() => controller.abort(), 10000);
             let r;
             try {
-              r = await fetch("/api/gas", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+              r = await fetch('/api/gas', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ fn: String(prop), args }),
                 signal: controller.signal
               });
             } finally {
               clearTimeout(timeout);
             }
-
             const data = await r.json();
-
             if (!data.ok) {
-              const err = new Error(data.error || "Error en backend");
-              if (onFailure) onFailure(err);
-              else console.error(err);
+              const err = new Error(data.error || 'Error en backend');
+              if (onFailure) onFailure(err); else console.error(err);
               return;
             }
-
             if (onSuccess) onSuccess(data.result);
             return data.result;
-
           } catch (err) {
-            if (onFailure) onFailure(err);
-            else console.error(err);
+            if (onFailure) onFailure(err); else console.error(err);
           }
         };
       }
     });
-
     return proxy;
   }
 
-  window.google.script.run = makeRunner();
-})();</script>
+  window.apiRun = makeApiRunner();
+})();
+</script>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -1430,7 +1411,7 @@
     <button id="navLogin" class="btn primary" onclick="openLogin()">Login</button>
     <button id="navDash"  class="btn hidden" onclick="show('dashboard')">Dashboard</button>
     <button id="navNews"  class="btn hidden" onclick="show('news')">Novedades</button>
-   <button id="navChat" class="btn hidden" onclick="show('chat'); loadChat()">Chat</button>
+   <button id="navChat" class="btn hidden" style="display:none!important" onclick="return false;">Chat</button>
 
     <!-- === NUEVO: pestaña Pedidos con guías (solo ADMIN / DESPACHANTE) === -->
     <button id="navWithGuides" class="btn hidden" onclick="show('withGuides')">Pedidos con guías</button>
@@ -3140,12 +3121,22 @@
 
   const show = (name)=>{ ['auth','dashboard','products','earnings','order','orders','shopifyInbox','rates','news','chat','commissions','commissionRequests','counter','closures','withGuides','rendicionesPagadas','profile','assignOrders','rankingDelivery','users','mapa']
       .forEach(v=>document.getElementById('view-'+v).classList.toggle('hidden', v!==name));
+    if (name !== 'chat') stopChatPolling();
+    if (name !== 'mapa') stopMapPolling();
     try { onShowView(name); } catch(_e) {}
   };
 
   // sello de última actualización
   function timeStamp(){ const d=new Date(); return d.toLocaleString('es-PY'); }
   function markUpdated(){ const el=document.getElementById('lastUpdateText'); if (el) el.textContent=timeStamp(); }
+  function cityEq(a,b){ return String(a||'').trim().toLowerCase() === String(b||'').trim().toLowerCase(); }
+  function getClientCityPrice(city){
+    const found = (clientCityPrices||[]).find(c => cityEq(c.city, city));
+    return found ? Number(found.price_gs || found.price || 0) : 0;
+  }
+  window.addEventListener('beforeunload', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
+  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) { try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} } });
+  window.addEventListener('load', ()=>{ try { stopChatPolling(); } catch(_e) {} try { stopMapPolling(); } catch(_e) {} });
 
   function setUserBoxUI(user){
     const box=document.getElementById('userBox');
@@ -3223,9 +3214,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
   }
  
-  const openLogin = ()=>{ 
-    try { clearCatalogCache(); } catch(_e) {}
-    me=null; setUserBoxUI(null); setNavForAuth(false); document.getElementById('roleChip').textContent='';
+  const openLogin = ()=>{ me=null; setUserBoxUI(null); setNavForAuth(false); document.getElementById('roleChip').textContent='';
     show('auth');
     // precargar email recordado
     const saved = localStorage.getItem(emailKey)||''; if (saved){ li_email.value=saved; li_saveemail.checked=true; }
@@ -3235,7 +3224,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // Auth
   // =========================
   function onRegister(){
-    google.script.run.withSuccessHandler(()=>{ toast('Cuenta creada. Inicia sesión.'); li_email.value = re_email.value.trim(); })
+    apiRun.withSuccessHandler(()=>{ toast('Cuenta creada. Inicia sesión.'); li_email.value = re_email.value.trim(); })
       .withFailureHandler(e=>toast(e.message||e))
       .register(re_name.value.trim(), re_email.value.trim(), re_pass.value, re_role.value);
   }
@@ -3245,19 +3234,14 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (rememberEmail) localStorage.setItem(emailKey, (li_email.value||'').trim());
     else localStorage.removeItem(emailKey);
 
-    google.script.run.withSuccessHandler(res=>{
-        try { clearCatalogCache(); } catch(_e) {}
+    apiRun.withSuccessHandler(res=>{
         localStorage.setItem(tokenKey, res.session.token);
         init();
       })
       .withFailureHandler(e=>toast(e.message||e))
       .login(li_email.value.trim(), li_pass.value, remember);
   }
-  function logout(){ 
-    try { clearCatalogCache(); } catch(_e) {}
-    localStorage.removeItem(tokenKey); 
-    openLogin(); 
-  }
+  function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3274,7 +3258,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     selectElement.classList.add('updating');
     const previousStatus = selectElement.dataset.previous || selectElement.value;
    
-    google.script.run
+    apiRun
 .withSuccessHandler((res) => {
         selectElement.disabled = false;
         selectElement.classList.remove('updating');
@@ -3309,7 +3293,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // =========================
   function init(){
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(res=>{
+    apiRun.withSuccessHandler(res=>{
       if (!res.authenticated){ openLogin(); return; }
       me=res.user; setUserBoxUI(me); setNavForAuth(true, me.role);
       document.getElementById('roleChip').textContent = me.role;
@@ -3382,8 +3366,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rendicionBox.classList.toggle('hidden', !(me?.role === 'PROVEEDOR' || me?.role === 'ADMIN'));
       }
 
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
       buildCityDropdown();
       refreshOrders();
       loadRates();
@@ -3393,7 +3376,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
       if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
-        google.script.run.withSuccessHandler(ds=>{
+        apiRun.withSuccessHandler(ds=>{
           const sel = document.getElementById('cl_delivery');
           const asSel = document.getElementById('as_delivery'); // NUEVO: selector para asignación masiva
           if (sel){
@@ -3546,7 +3529,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     console.log('Cargando proveedores para filtros...');
    
-    google.script.run
+    apiRun
       .withSuccessHandler(providers => {
         console.log('Proveedores recibidos:', providers);
        
@@ -3588,7 +3571,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function loadProvidersForGuidesFilter() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(providers => {
         const select = document.getElementById('pg_filter_provider');
         if (!select) return;
@@ -3618,7 +3601,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function loadVendorsForCommissionsFilter() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(users => {
         const sel = document.getElementById('pc_vendor_admin');
         if (!sel) return;
@@ -3634,7 +3617,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // ===== NUEVA FUNCIÓN: Cargar proveedores para filtro de ranking =====
   function loadProvidersForRankingFilter() {
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(providers => {
         const select = document.getElementById('rank_provider');
         if (select) {
@@ -3655,7 +3638,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function loadDeliveriesForRendicionesPagadas() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(users => {
         const sel = document.getElementById('rp_delivery');
         if (!sel) return;
@@ -3676,7 +3659,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const desde = document.getElementById('rp_from')?.value || '';
     const hasta = document.getElementById('rp_to')?.value || '';
 
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         const tb = document.getElementById('rp_tbody');
         if (!tb) return;
@@ -3707,6 +3690,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   let chatPeerEmail = '';
   let chatPollTimer = null;
   let chatPingTimer = null;
+
+  function stopChatPolling(){
+    try { if (chatPingTimer){ clearInterval(chatPingTimer); chatPingTimer = null; } } catch(_e) {}
+    try { if (chatPollTimer){ clearInterval(chatPollTimer); chatPollTimer = null; } } catch(_e) {}
+  }
+
+
+  function stopMapPolling(){
+    try { if (liveMapRefreshTimer){ clearInterval(liveMapRefreshTimer); liveMapRefreshTimer = null; } } catch(_e) {}
+    try { stopDeliveryGeolocation(); } catch(_e) {}
+  }
 
   function _threadKey(a,b){
     a = String(a||'').trim().toLowerCase();
@@ -3744,7 +3738,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
 
-    google.script.run
+    apiRun
       .withSuccessHandler(list=>{
         const sel = document.getElementById('chatToSelect');
         if (!sel) return;
@@ -3786,7 +3780,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
 
-    google.script.run
+    apiRun
       .withSuccessHandler(threads=>{
         const box = document.getElementById('chatThreads');
         if (!box) return;
@@ -3839,7 +3833,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       return;
     }
 
-    google.script.run
+    apiRun
       .withSuccessHandler(res=>{
         const box = document.getElementById('chatMessages');
         if (!box) return;
@@ -3908,7 +3902,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
         box.scrollTop = box.scrollHeight;
 
-        google.script.run.withFailureHandler(()=>{}).markChatRead(tok, chatSelectedKey);
+        apiRun.withFailureHandler(()=>{}).markChatRead(tok, chatSelectedKey);
 
         if (!silent) toast('✅ Mensajes cargados');
       })
@@ -3932,7 +3926,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const payload = { to_email: chatPeerEmail, message_text: text };
 
     const sendPayload = (pl)=>{
-      google.script.run
+      apiRun
         .withSuccessHandler(()=>{
           if (textEl) textEl.value = '';
           if (fileEl) fileEl.value = '';
@@ -3965,7 +3959,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function chatPing(){
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run.withFailureHandler(()=>{}).chatPing(tok);
+    apiRun.withFailureHandler(()=>{}).chatPing(tok);
   }
 
 
@@ -3978,6 +3972,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     refreshWallet();
     loadRates();
     loadClientPrices();
+    try { buildCityDropdown(); } catch(_e) {}
     if (!document.getElementById('view-earnings')?.classList.contains('hidden')) loadEarnings();
 
     // === NUEVO: re-render vista Pedidos con guías
@@ -4019,19 +4014,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         rows: Array.isArray(rows) ? rows : []
       }));
     }catch(_e){}
-  }
-
-  function clearCatalogCache(){
-    try{
-      products = [];
-      catalogMap = {};
-      catalogLoadedAt = 0;
-      catalogLoadPromise = null;
-      const key = getCatalogCacheKey();
-      if (key) localStorage.removeItem(key);
-    }catch(_e){}
-    const stat = document.getElementById('catalogStatus');
-    if (stat) stat.textContent = 'Catálogo limpiado';
   }
 
   function applyCatalogRows(rows, opts){
@@ -4132,7 +4114,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (catalogLoadPromise && !force) return catalogLoadPromise;
 
     catalogLoadPromise = new Promise((resolve, reject)=>{
-      google.script.run
+      apiRun
         .withSuccessHandler(rows=>{
           catalogLoadedAt = Date.now();
           saveCatalogCache(rows);
@@ -4185,7 +4167,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
 
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(res=>{
         userFavorites = Array.isArray(res) ? res : [];
         syncFavoritesToLocal();
@@ -4472,7 +4454,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   function saveProviderLogo(providerEmail, logoUrl){
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return toast('No autenticado');
-    google.script.run
+    apiRun
       .withSuccessHandler((res)=>{
         const normalizedEmail = String(providerEmail||'').trim().toLowerCase();
         if (Array.isArray(products)) {
@@ -4554,7 +4536,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       data.provider_email = me.email;
     }
 
-    google.script.run.withSuccessHandler(()=>{
+    apiRun.withSuccessHandler(()=>{
       toast('Producto actualizado');
       closeEditProductModal();
       loadCatalog();
@@ -4565,7 +4547,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (!confirm('¿Estás seguro de que querés eliminar este producto?')) return;
    
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(()=>{
+    apiRun.withSuccessHandler(()=>{
       toast('Producto eliminado');
       loadCatalog();
     }).withFailureHandler(e=>toast(e.message||e)).deleteProduct(tok, productId);
@@ -4609,7 +4591,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       p.provider_email = me.email;
     }
 
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast('Producto guardado');
         loadCatalog();
@@ -4626,10 +4608,32 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // =========================
   function buildCityDropdown(){
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(rows=>{
-      clientCityPrices=rows||[];
-      const sel=o_city; sel.innerHTML='<option value="">Selecciona ciudad…</option>'+rows.map(r=>`<option>${r.city}</option>`).join('');
-    }).getDeliveryClientPrices(tok);
+    const sel = document.getElementById('o_city');
+    if (!tok || !sel) return;
+    const current = String(sel.value || '').trim();
+    apiRun
+      .withSuccessHandler(rows=>{
+        const clean = Array.isArray(rows) ? rows.filter(r => String(r?.city || '').trim()) : [];
+        const seen = new Set();
+        clientCityPrices = clean.filter(r=>{
+          const key = String(r.city || '').trim().toLowerCase();
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).sort((a,b)=> String(a.city||'').localeCompare(String(b.city||''), 'es', { sensitivity:'base' }));
+
+        sel.innerHTML = '<option value="">Selecciona ciudad…</option>' + clientCityPrices.map(r=>{
+          const city = String(r.city || '').trim();
+          return `<option value="${city}">${city}</option>`;
+        }).join('');
+
+        if (current && clientCityPrices.some(r => cityEq(r.city, current))) {
+          sel.value = clientCityPrices.find(r => cityEq(r.city, current)).city;
+        }
+        try { recalcOrder(); } catch(_e) {}
+      })
+      .withFailureHandler(e=>console.error('Error ciudades:', e))
+      .getDeliveryClientPrices(tok);
   }
 
   // =========================
@@ -4700,11 +4704,11 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       const s=Number(sale?.value||0); const q=Number(qty?.value||0);
       totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
-    const city=(o_city.value||'').trim();
-    const found=(clientCityPrices||[]).find(c=>String(c.city||'').toLowerCase()===city.toLowerCase());
-    const del=found?Number(found.price||0):0;
-    cityHint.textContent = del?`Delivery cobrado: ${nf(del)} Gs`:'';
-    o_total.value=nf(totalVenta); o_delivery.value=nf(del);
+    const city = String(o_city?.value || '').trim();
+    const del = getClientCityPrice(city);
+    cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
+    o_total.value = nf(totalVenta);
+    o_delivery.value = nf(del);
     o_commission.value = nf(totalVenta - (totalProv + del));
   }
 
@@ -4765,13 +4769,20 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
   }
 
+  document.getElementById('o_city')?.addEventListener('change', ()=>{ try { recalcOrder(); } catch(_e) {} });
+
   function onShowView(name){
     if (name === 'order') {
+      try { buildCityDropdown(); } catch(_e) {}
       ensureOrderFormReady();
+      setTimeout(()=>{ try { buildCityDropdown(); } catch(_e) {} }, 250);
     }
     if (name === 'products') {
-      clearCatalogCache();
-      loadCatalog(true);
+      loadCatalog();
+    }
+    if (name === 'rates') {
+      try { loadRates(); } catch(_e) {}
+      try { loadClientPrices(); } catch(_e) {}
     }
   }
 
@@ -4805,7 +4816,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     saveBtn.disabled = true;
     saveBtn.textContent = 'Guardando...';
    
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{
         toast('✅ Pedido guardado');
         refreshOrders();
@@ -4858,7 +4869,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     const header=`Buenas, le escribo del sector de repartos 👋
 Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const footer = `\n¿Podría enviarme su ubicación por Google Maps para llegar de forma segura? Muchas gracias.`;
-    google.script.run.withSuccessHandler(txt=>{
+    apiRun.withSuccessHandler(txt=>{
       const msg = `${header}\n\n${txt}\n${footer}`;
       const url = `https://wa.me/${phone.replace('+','')}?text=${encodeURIComponent(msg)}`;
       window.open(url,'_blank');
@@ -4872,20 +4883,20 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
-      ? google.script.run.withSuccessHandler(rows=>{
+      ? apiRun.withSuccessHandler(rows=>{
           lastOrders=rows||[];
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
-      : google.script.run.withSuccessHandler(rows=>{
+      : apiRun.withSuccessHandler(rows=>{
           lastOrders=rows||[];
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listOrdersFiltered(tok, filters.fromISO, filters.toISO, filters.q, '', '');
 
-    google.script.run.withSuccessHandler(ds=>{ deliveries=ds||[]; renderOrdersLast(); })
+    apiRun.withSuccessHandler(ds=>{ deliveries=ds||[]; renderOrdersLast(); })
       .withFailureHandler(()=>{}).listUsersByRole(tok,'DELIVERY');
   }
 
@@ -5175,7 +5186,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         e.target.classList.add('updating');
         const previousStatus = e.target.value;
        
-        google.script.run.withSuccessHandler(()=>{
+        apiRun.withSuccessHandler(()=>{
           e.target.disabled = false;
           e.target.classList.remove('updating');
           e.target.classList.add('success-flash');
@@ -5206,7 +5217,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         e.target.classList.add('updating');
         const previousStatus = e.target.value;
        
-        google.script.run.withSuccessHandler(()=>{
+        apiRun.withSuccessHandler(()=>{
           e.target.disabled = false;
           e.target.classList.remove('updating');
           e.target.classList.add('success-flash');
@@ -5231,7 +5242,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       inp.onchange=(e)=>{
         const id=e.target.getAttribute('data-id'); const qty=Number(e.target.value||0);
         const tok=localStorage.getItem(tokenKey);
-        google.script.run.withSuccessHandler(()=>{ toast('Empaques guardados'); refreshWallet(); })
+        apiRun.withSuccessHandler(()=>{ toast('Empaques guardados'); refreshWallet(); })
           .withFailureHandler(err=>{ toast(err.message||err); })
           .setPackCount?.(tok,id,qty);
       };
@@ -5246,7 +5257,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
    
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast('✅ Pedido eliminado');
         refreshOrders();
@@ -5292,7 +5303,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
 
     if (!data.customer_name || !data.phone || !data.city) { toast('Cliente, teléfono y ciudad son obligatorios'); return; }
 
-    google.script.run.withSuccessHandler(()=>{
+    apiRun.withSuccessHandler(()=>{
       toast('Pedido actualizado');
       closeEditOrderModal();
       refreshOrders();
@@ -5353,7 +5364,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     // === NUEVO: PROVEEDOR usa métricas específicas ===
     if (me?.role === 'PROVEEDOR') {
       loadProviderAdSpend();
-      google.script.run.withSuccessHandler(res=>{
+      apiRun.withSuccessHandler(res=>{
         kpi_provider_orders.textContent = nf(res.cards.orders);
         kpi_provider_sold.textContent = nf(res.cards.sold);
         kpi_provider_delivered.textContent = nf(res.cards.delivered);
@@ -5385,7 +5396,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       }).withFailureHandler(e=>toast(e.message||e)).providerMetrics(tok,f,t);
     } else {
       // Métricas normales para otros roles
-      google.script.run.withSuccessHandler(res=>{
+      apiRun.withSuccessHandler(res=>{
         kpi_orders.textContent=nf(res.cards.orders);
         kpi_sold.textContent=nf(res.cards.sold);
         kpi_delivered.textContent=nf(res.cards.delivered);
@@ -5464,7 +5475,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   // =========================
   function refreshWallet(){
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(res=>{
+    apiRun.withSuccessHandler(res=>{
       w_balance.textContent = nf(res.balance_gs||0);
       const tb=document.getElementById('wallet_tbody'); tb.innerHTML='';
       (res.txs||[]).forEach(t=>{
@@ -5484,7 +5495,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const f=document.getElementById('earn_from')?.value || '';
     const t=document.getElementById('earn_to')?.value || '';
-    google.script.run.withSuccessHandler(res=>{
+    apiRun.withSuccessHandler(res=>{
       document.getElementById('earn_kpi_today').textContent = nf(res?.kpis?.gain_today_gs || 0);
       document.getElementById('earn_kpi_range').textContent = nf(res?.kpis?.gain_range_gs || 0);
       document.getElementById('earn_kpi_units').textContent = nf(res?.kpis?.delivered_units || 0);
@@ -5512,7 +5523,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   // =========================
   function refreshNews(){
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(rows=>{
+    apiRun.withSuccessHandler(rows=>{
       const tb=document.getElementById('news_tbody'); tb.innerHTML='';
       (rows||[]).forEach(n=>{
         const tr=document.createElement('tr');
@@ -5530,7 +5541,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     // === MODIFICADO: PROVEEDOR también puede ver tarifas ===
     document.getElementById('ratesAdminBox').classList.toggle('hidden', !(me?.role==='ADMIN' || me?.role==='PROVEEDOR'));
-    google.script.run.withSuccessHandler(rows=>{
+    apiRun.withSuccessHandler(rows=>{
       const tb=document.getElementById('rates_tbody'); tb.innerHTML='';
       (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${r.email}</td><td>${r.city}</td><td class="right">${nf(r.rate_gs)}</td>`; tb.appendChild(tr); });
       allRatesMap = {};
@@ -5541,16 +5552,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   }
   function saveRate(){
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(()=>{ toast('Tarifa guardada'); loadRates(); })
+    apiRun.withSuccessHandler(()=>{ toast('Tarifa guardada'); loadRates(); })
       .withFailureHandler(e=>toast(e.message||e))
       .setDeliveryRate(tok, dr_email.value.trim(), dr_city.value.trim(), Number(dr_rate.value||0));
   }
   function loadClientPrices(){
     const tok=localStorage.getItem(tokenKey);
     document.getElementById('clientPricesAdminBox').classList.toggle('hidden', me?.role!=='ADMIN');
-    google.script.run.withSuccessHandler(rows=>{
+    apiRun.withSuccessHandler(rows=>{
       const tb=document.getElementById('client_prices_tbody'); if (!tb) return; tb.innerHTML='';
-      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price)}</td>`; tb.appendChild(tr); });
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price_gs || 0)}</td>`; tb.appendChild(tr); });
       markUpdated();
     }).withFailureHandler(e=>toast(e.message||e)).getDeliveryClientPrices(tok);
   }
@@ -5558,7 +5569,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const city = (cp_city.value||'').trim(); const price = Number(cp_price.value||0);
     if (!city || price<=0){ toast('Ciudad y precio son obligatorios'); return; }
-    google.script.run.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
+    apiRun.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
       .withFailureHandler(e=>toast(e.message||e))
       .setClientCityPrice(tok, city, price);
   }
@@ -5569,14 +5580,14 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   function openGuide(id){
     guideOrderId=id; guideText.value='Cargando...'; document.getElementById('guideModal').style.display='flex';
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(txt=>{ guideText.value=txt; })
+    apiRun.withSuccessHandler(txt=>{ guideText.value=txt; })
       .withFailureHandler(e=>{ guideText.value='Error: '+(e.message||e); })
       .getGuideText(tok,id);
   }
   function closeGuide(){ document.getElementById('guideModal').style.display='none'; }
   function downloadGuide(){
     const tok=localStorage.getItem(tokenKey);
-    google.script.run.withSuccessHandler(f=>{ window.open(f.url,'_blank'); })
+    apiRun.withSuccessHandler(f=>{ window.open(f.url,'_blank'); })
       .withFailureHandler(e=>toast(e.message||e))
       .generateGuidePDF(tok, guideOrderId);
   }
@@ -5593,7 +5604,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const providerFilter = document.getElementById('comm_filter_provider')?.value || '';
 
     // NUEVO: usamos la función FLEX que no obliga Estado 1 = ENTREGADO
-    google.script.run.withSuccessHandler(rows=>{
+    apiRun.withSuccessHandler(rows=>{
       const tb=document.getElementById('comms_tbody'); tb.innerHTML='';
 
       // === En Comisión, limitar selector Estado 1 a estos 2 (como pediste):
@@ -5650,7 +5661,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           const previousStatus = e.target.value;
           applyCommissionPaidSelectStyles(e.target.parentNode || document);
          
-          google.script.run.withSuccessHandler(()=>{
+          apiRun.withSuccessHandler(()=>{
             e.target.disabled = false;
             e.target.classList.remove('updating');
             applyCommissionPaidSelectStyles(e.target.parentNode || document);
@@ -5706,7 +5717,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       loadVendorProviderBalances(vendorEmail, f, t);
       loadCommissionRequestBalances(vendorEmail, f, t);
 
-      google.script.run
+      apiRun
         .withSuccessHandler(rows => {
           let visibles = rows || [];
           if (providerFilter) {
@@ -5836,7 +5847,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
      
       const batch = ids.slice(i, i + BATCH_SIZE);
       const promises = batch.map(id =>
-        google.script.run
+        apiRun
           .withSuccessHandler(() => ({ success: true, id }))
           .withFailureHandler(error => ({ success: false, id, error }))
           .payVendorCommission(tok, id, true)
@@ -5895,7 +5906,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   function loadSeqAdmin(){
     if (!me || me.role!=='ADMIN') return;
     const tok=localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(res=>{
         document.getElementById('seq_prefix').textContent = res.prefix;
         document.getElementById('seq_pad').textContent    = res.pad;
@@ -5908,7 +5919,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok=localStorage.getItem(tokenKey);
     const n = Number(document.getElementById('seq_new').value || '');
     if (!Number.isInteger(n) || n<0){ toast('Ingresá un entero >= 0'); return; }
-    google.script.run
+    apiRun
       .withSuccessHandler(res=>{
         toast('Contador actualizado');
         document.getElementById('seq_value').textContent = res.value;
@@ -5926,7 +5937,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   function submitResetRequest(){
     const email = (document.getElementById('reset_email').value||'').trim();
     if (!email){ toast('Ingresá tu email'); return; }
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{ toast('Si el email existe, te enviamos un enlace'); closeResetRequest(); })
       .withFailureHandler(e=>toast(e.message||e))
       .requestPasswordReset(email);
@@ -5941,7 +5952,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     if (p1 !== p2){ toast('Las contraseñas no coinciden'); return; }
     const tok = window._pendingResetToken || '';
     if (!tok){ toast('Token inválido'); return; }
-    google.script.run
+    apiRun
       .withSuccessHandler(res=>{
         toast('Contraseña actualizada');
         if (res?.session?.token){
@@ -6044,7 +6055,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const tok = localStorage.getItem(tokenKey);
     if (!orderId) return;
     if (btn) setButtonBusy(btn, true, 'Marcando...');
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{
         patchLastOrder(orderId, { status2: 'RENDIDO' });
         const row = btn ? btn.closest('tr') : null;
@@ -6075,7 +6086,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       ? String(me.email||'').toLowerCase()
       : (document.getElementById('cl_delivery')?.value || '');
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         // Actualizar KPIs detallados
         document.getElementById('cl_k_entregados_cnt').textContent = nf(result.entregados.count);
@@ -6216,7 +6227,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     if (Array.isArray(lastOrders) && lastOrders.length){
       afterOrders(lastOrders);
     } else {
-      google.script.run.withSuccessHandler(rows=>{ lastOrders=rows; afterOrders(rows); })
+      apiRun.withSuccessHandler(rows=>{ lastOrders=rows; afterOrders(rows); })
         .withFailureHandler(e=>toast(e.message||e)).listOrders(tok);
     }
   }
@@ -6270,7 +6281,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       const dt = new Date(parts[0], (parts[1]||1) - 1, parts[2]||1, now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
       isoValue = dt.toISOString();
     }
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{
         const patch = { assigned_at: isoValue || '' };
         patchLastOrder(orderId, patch);
@@ -6294,7 +6305,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     if (!tok) return;
     const row = select?.closest('tr');
     if (select) select.disabled = true;
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{
         patchLastOrder(orderId, { city: value || '' });
         if (row){
@@ -6347,7 +6358,7 @@ function renderPendingGuidesSimplified() {
       toISO: t
     };
    
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         // Actualizar KPI
         const k = document.getElementById('pg_k_cnt');
@@ -6380,7 +6391,7 @@ function renderPendingGuidesSimplified() {
    
     toast('📋 Generando guía...');
    
-    google.script.run
+    apiRun
       .withSuccessHandler(function(resultado) {
         if (resultado.success && resultado.text) {
           const blob = new Blob([resultado.text], {
@@ -6401,7 +6412,7 @@ function renderPendingGuidesSimplified() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
    
-    google.script.run
+    apiRun
       .withSuccessHandler(function(resultado) {
         if (resultado.success && resultado.text) {
           navigator.clipboard.writeText(resultado.text)
@@ -6576,7 +6587,7 @@ function renderPendingGuidesSimplified() {
     const txtBtn = document.getElementById('bulkTxtBtn');
     if (txtBtn) txtBtn.disabled = true;
    
-    google.script.run
+    apiRun
       .withSuccessHandler(function(result) {
         if (result && result.success) {
           const binaryString = atob(result.base64Data);
@@ -6631,7 +6642,7 @@ function renderPendingGuidesSimplified() {
     const pdfBtn = document.getElementById('bulkPrintBtn');
     if (pdfBtn) pdfBtn.disabled = true;
    
-    google.script.run
+    apiRun
       .withSuccessHandler(function(result) {
         if (result && result.success) {
           window.open(result.downloadUrl || result.url, '_blank');
@@ -6718,7 +6729,7 @@ function renderPendingGuidesSimplified() {
    
     selectedIds.forEach((orderId, index) => {
       setTimeout(() => {
-        google.script.run
+        apiRun
           .withSuccessHandler(result => {
             completed++;
             console.log(`✅ ${orderId}:`, result.providers);
@@ -6750,7 +6761,7 @@ function renderPendingGuidesSimplified() {
    
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         toast(`✅ ${result.message}`);
         console.log('Resultado batch:', result);
@@ -6772,7 +6783,7 @@ function renderPendingGuidesSimplified() {
    
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         alert(`DEBUG - Pedido ${orderId}:\n\n` +
               `Items: ${order.items_json}\n` +
@@ -6790,7 +6801,7 @@ function renderPendingGuidesSimplified() {
   function updateSingleProvider(orderId) {
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         toast(`✅ ${orderId}: ${result.providers || 'Sin proveedores'}`);
         refreshOrders(); // Recargar para ver cambios
@@ -6806,26 +6817,21 @@ function renderPendingGuidesSimplified() {
   // =========================
   function debugProducts(){
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        alert(
-          `DEBUG PRODUCTOS:\n\n` +
-          `Total tabla: ${result?.count ?? 0}\n` +
-          `Visibles para este usuario: ${result?.visibleCount ?? 0}\n` +
-          `Usuario: ${result?.user?.email || '-'} (${result?.user?.role || '-'})`
-        );
+        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
-        toast('Error en debug: ' + (e.message || e));
+        toast('Error en debug: ' + e.message);
       })
       .debugProducts(tok);
   }
 
   function debugProviderData(){
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PROVEEDOR:', result);
         const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${result.productosProveedor.length}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
@@ -6939,7 +6945,7 @@ function renderPendingGuidesSimplified() {
         e.target.classList.add('updating');
         const previousStatus = e.target.value;
        
-        google.script.run
+        apiRun
           .withSuccessHandler(() => {
             e.target.disabled = false;
             e.target.classList.remove('updating');
@@ -6978,7 +6984,7 @@ function renderPendingGuidesSimplified() {
      
       // Usar filtros simplificados
       if (filters.providerEmail) {
-        google.script.run
+        apiRun
           .withSuccessHandler(orders => {
             lastOrders = orders;
             renderOrdersLast();
@@ -6987,7 +6993,7 @@ function renderPendingGuidesSimplified() {
           .withFailureHandler(e => toast('❌ Error: ' + e.message))
           .getOrdersByProvider(tok, filters.providerEmail, filters);
       } else {
-        google.script.run
+        apiRun
           .withSuccessHandler(orders => {
             lastOrders = orders;
             renderOrdersLast();
@@ -7067,7 +7073,7 @@ function renderPendingGuidesSimplified() {
    
     // Cargar delivery disponibles
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(deliveries => {
         const selectOptions = deliveries.map(d =>
           `<option value="${d.email}">${d.name || d.email}</option>`
@@ -7131,7 +7137,7 @@ function renderPendingGuidesSimplified() {
    
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         toast(`✅ ${result.updated} pedidos asignados a ${deliveryEmail}`);
         clearProviderDispatch();
@@ -7164,7 +7170,7 @@ function renderPendingGuidesSimplified() {
     const f = document.getElementById('dash_from')?.value || '';
     const t = document.getElementById('dash_to')?.value || '';
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         document.getElementById('kpi_delivery_total_profit').textContent = nf(result.total_profit);
         document.getElementById('kpi_delivery_pending_profit').textContent = nf(result.pending_profit);
@@ -7183,7 +7189,7 @@ function renderPendingGuidesSimplified() {
     const t = document.getElementById('rank_to')?.value || '';
     const provider = document.getElementById('rank_provider')?.value || '';
    
-    google.script.run
+    apiRun
       .withSuccessHandler(result => {
         updateRankingUI(result);
         updateRankingChart(result);
@@ -7388,7 +7394,7 @@ function renderPendingGuidesSimplified() {
       q: q || ''
     };
    
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         assignableOrders = rows;
         renderAssignableOrders(rows);
@@ -7457,7 +7463,7 @@ function renderPendingGuidesSimplified() {
       return;
     }
    
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         patchAssignableOrder(orderId, { assigned_delivery: me.email });
         patchLastOrder(orderId, { assigned_delivery: me.email, assigned_at: new Date().toISOString() });
@@ -7585,7 +7591,7 @@ function renderPendingGuidesSimplified() {
     clearAssignByIdsResult(false);
     toast(`Procesando ${parsed.length} IDs...`);
 
-    google.script.run
+    apiRun
       .withSuccessHandler(res => {
         renderAssignByIdsResult(res || {});
         loadAssignableOrders();
@@ -7630,7 +7636,7 @@ function renderPendingGuidesSimplified() {
       const orderId = checkbox.getAttribute('data-id');
 
       setTimeout(() => {
-        google.script.run
+        apiRun
           .withSuccessHandler(() => {
             successCount++;
             successIds.push(orderId);
@@ -7733,7 +7739,7 @@ function renderPendingGuidesSimplified() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
     ensureLiveMap();
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         rows = Array.isArray(rows) ? rows : [];
         renderLiveMapRows(rows);
@@ -7843,7 +7849,7 @@ function renderPendingGuidesSimplified() {
   function loadDeliveryTrackingStatus(){
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(res => {
         updateTrackingButtonState(!!res?.active, res?.tracking_until || '', res?.last_seen_at || '');
         if (res?.active) startDeliveryGeolocation();
@@ -7873,7 +7879,7 @@ function renderPendingGuidesSimplified() {
   function toggleDeliveryTrackingConsent(){
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(res => {
         updateTrackingButtonState(!!res?.active, res?.tracking_until || '', '');
         toast(res?.active ? 'Rastreo activado correctamente' : 'Rastreo desactivado');
@@ -7893,7 +7899,7 @@ function renderPendingGuidesSimplified() {
     const sendPosition = (pos) => {
       const tok = localStorage.getItem(tokenKey);
       if (!tok || !pos?.coords) return;
-      google.script.run
+      apiRun
         .withSuccessHandler(res => {
           const statusText = document.getElementById('trackingStatusText');
           const lastSeenText = document.getElementById('trackingLastSeenText');
@@ -7936,7 +7942,7 @@ function renderPendingGuidesSimplified() {
     const tok = localStorage.getItem(tokenKey);
     const ids = Array.isArray(orderIds) ? orderIds.filter(Boolean) : [];
     if (!tok || !ids.length) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(res => {
         lastGeneratedReportBatch = res || null;
         const targetId = options?.targetId || 'as_ids_result';
@@ -8023,7 +8029,7 @@ function renderPendingGuidesSimplified() {
 
   function loadProfile(){
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(p=>{
         // p puede venir vacío si aún no guardaste nada
         const v = p || {};
@@ -8067,7 +8073,7 @@ function renderPendingGuidesSimplified() {
       wallet_number: pf_wallet_number.value.trim(),
       wallet_holder: pf_wallet_holder.value.trim()
     };
-    google.script.run
+    apiRun
       .withSuccessHandler((res)=>{
         toast('Perfil guardado');
         if (res?.profile && document.getElementById('pf_logo_url')) {
@@ -8111,7 +8117,7 @@ function renderPendingGuidesSimplified() {
     const roleFilter = document.getElementById('users_filter_role')?.value || '';
     const statusFilter = document.getElementById('users_filter_status')?.value || '';
    
-    google.script.run
+    apiRun
       .withSuccessHandler(users => {
         renderUsersTable(users, search, roleFilter, statusFilter);
         updateUsersKPIs(users);
@@ -8213,7 +8219,7 @@ function renderPendingGuidesSimplified() {
     if (!confirm(`¿Aprobar usuario ${email}?`)) return;
    
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast('✅ Usuario aprobado');
         loadUsers();
@@ -8226,7 +8232,7 @@ function renderPendingGuidesSimplified() {
     if (!confirm(`¿Rechazar usuario ${email}? Se eliminará permanentemente.`)) return;
    
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast('❌ Usuario rechazado');
         loadUsers();
@@ -8272,7 +8278,7 @@ function renderPendingGuidesSimplified() {
     document.getElementById('rendicion_total_pagar').textContent = nf(monto) + ' Gs';
 
     const tok = localStorage.getItem(tokenKey);
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         const pagos = (rows || []).filter(r => String(r.delivery_email||'').toLowerCase()===String(deliveryEmail).toLowerCase()
           && String(r.fecha_rendicion||'')===String(fecha));
@@ -8317,7 +8323,7 @@ function renderPendingGuidesSimplified() {
    
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast('✅ Rendición marcada como PAGADA');
        
@@ -8345,7 +8351,7 @@ function renderPendingGuidesSimplified() {
    
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast('⚠️ Rendición desmarcada');
        
@@ -8387,7 +8393,7 @@ function renderPendingGuidesSimplified() {
   function updateRetiroStatus(orderId, status) {
     const tok = localStorage.getItem(tokenKey);
    
-    google.script.run
+    apiRun
       .withSuccessHandler(() => {
         toast(`✅ Estado de retiro actualizado: ${status}`);
         loadClosures(); // Recargar la vista
@@ -8451,7 +8457,7 @@ function renderPendingGuidesSimplified() {
         const previousStatus = e.target.value;
         applyCommissionPaidSelectStyles(e.target.parentNode || document);
        
-        google.script.run.withSuccessHandler(()=>{
+        apiRun.withSuccessHandler(()=>{
           e.target.disabled = false;
           e.target.classList.remove('updating');
           applyCommissionPaidSelectStyles(e.target.parentNode || document);
@@ -8490,7 +8496,7 @@ function renderPendingGuidesSimplified() {
   function loadVendorsForRequestFilters() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok || !(me?.role === 'ADMIN' || me?.role === 'PROVEEDOR')) return;
-    google.script.run.withSuccessHandler(users => {
+    apiRun.withSuccessHandler(users => {
       const scr = document.getElementById('scr_vendor');
       if (!scr) return;
       let opt = '<option value="">Todos los vendedores</option>';
@@ -8503,7 +8509,7 @@ function renderPendingGuidesSimplified() {
   function loadProvidersForRequestFilters() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok || !(me?.role === 'ADMIN' || me?.role === 'PROVEEDOR')) return;
-    google.script.run.withSuccessHandler(users => {
+    apiRun.withSuccessHandler(users => {
       const scr = document.getElementById('scr_provider');
       if (!scr) return;
       let opt = '<option value="">Todos los proveedores</option>';
@@ -8573,7 +8579,7 @@ function renderPendingGuidesSimplified() {
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
     const vendor = vendorEmailOpt || getCurrentVendorForCommissionBalances();
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         loadCommissionRequestBalances(vendor, fromISO, toISO, function(requestRows){
           renderVendorProviderBalances(rows || [], requestRows || []);
@@ -8601,7 +8607,7 @@ function renderPendingGuidesSimplified() {
       if (typeof done === 'function') done([]);
       return;
     }
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         commissionRequestBalancesCache = rows || [];
         if (typeof done === 'function') done(commissionRequestBalancesCache);
@@ -8713,7 +8719,7 @@ function renderPendingGuidesSimplified() {
       submitBtn.textContent = 'Procesando...';
     }
 
-    google.script.run
+    apiRun
       .withSuccessHandler((res) => {
         toast((res?.message || 'Solicitud de comisiones exitosa') + ' ✓. Ya se retuvo Gs ' + nf(res?.retained_gs || amount));
         closeCommissionRequestModal();
@@ -8748,7 +8754,7 @@ function renderPendingGuidesSimplified() {
     const status = document.getElementById('scr_status')?.value || '';
     const vendor = me?.role === 'VENDEDOR' ? '' : (document.getElementById('scr_vendor')?.value || '');
     const provider = me?.role === 'VENDEDOR' ? '' : (document.getElementById('scr_provider')?.value || '');
-    google.script.run
+    apiRun
       .withSuccessHandler(rows => {
         const tb = document.getElementById('commission_requests_tbody');
         if (!tb) return;
@@ -8780,7 +8786,7 @@ function renderPendingGuidesSimplified() {
   function resolveCommissionRequestUI(id, approve){
     const tok = localStorage.getItem(tokenKey);
     const note = prompt(approve ? 'Nota de aprobación (opcional):' : 'Motivo de rechazo (opcional):', '') || '';
-    google.script.run
+    apiRun
       .withSuccessHandler((res) => {
         const c = Number(res?.updated_orders_count || 0);
         const skipped = Number((res?.skipped_order_ids || []).length || 0);
@@ -8815,7 +8821,7 @@ function renderPendingGuidesSimplified() {
       btn.disabled = !canRendir;
       btn.onclick = function(){
         const tok = localStorage.getItem(tokenKey);
-        google.script.run
+        apiRun
           .withSuccessHandler(()=>{ toast('Estado cambiado a RENDIDO'); loadClosures(); })
           .withFailureHandler(e=>toast(e.message || e))
           .updateOrderStatus2(tok, id, 'RENDIDO');
@@ -8892,7 +8898,7 @@ function renderPendingGuidesSimplified() {
     const msg = document.getElementById('shopify_import_msg');
     if (msg) msg.textContent = 'Importando...';
 
-    google.script.run
+    apiRun
       .withSuccessHandler(res=>{
         if (msg) msg.textContent = `✅ Importados: ${res.imported||0} | Repetidos: ${res.duplicates||0} | Total leídos: ${res.total||0}`;
         toast('✅ Importación OK');
@@ -8912,7 +8918,7 @@ function renderPendingGuidesSimplified() {
     const t = document.getElementById('sb_to')?.value || '';
     const st = document.getElementById('sb_status')?.value || '';
 
-    google.script.run
+    apiRun
       .withSuccessHandler(rows=>{
         renderShopifyInbox(rows||[]);
       })
@@ -8960,7 +8966,7 @@ function renderPendingGuidesSimplified() {
   function shopifySetStatus(rowId, estado){
     const tok = localStorage.getItem(tokenKey);
     if (!tok) return;
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{ toast('Estado actualizado'); loadShopifyInbox(); })
       .withFailureHandler(e=>toast('❌ ' + (e.message||e)))
       .setShopifyInboxStatus(tok, rowId, estado);
@@ -8972,10 +8978,10 @@ function renderPendingGuidesSimplified() {
     if (!tok) return;
 
     // Paso A: cambiar estado
-    google.script.run
+    apiRun
       .withSuccessHandler(()=>{
         // Paso B: traer fila y prellenar
-        google.script.run
+        apiRun
           .withSuccessHandler(row=>{
             prefillOrderFromShopifyRow(row);
           })
