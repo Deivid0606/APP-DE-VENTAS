@@ -3242,17 +3242,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       .login(li_email.value.trim(), li_pass.value, remember);
   }
   function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
-  let appAutoRefreshTimer = null;
-  function scheduleAutoRefresh(){
-    if (appAutoRefreshTimer) clearInterval(appAutoRefreshTimer);
-    appAutoRefreshTimer = setInterval(()=>{
-      if (document.hidden || !me) return;
-      try { refreshOrders(); } catch(_e){}
-      try { refreshDashboard(); } catch(_e){}
-      try { if (document.getElementById('rates') && !document.getElementById('rates').classList.contains('hidden')) { loadRates(); loadClientPrices(); } } catch(_e){}
-    }, 30000);
-  }
-  document.addEventListener('visibilitychange', ()=>{ if (!document.hidden && me) { try { refreshOrders(); } catch(_e){} try { refreshDashboard(); } catch(_e){} } });
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3384,7 +3373,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       loadClientPrices();
       refreshDashboard();
       refreshWallet();
-      scheduleAutoRefresh();
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
       if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
@@ -4691,25 +4679,24 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function getItems(){
-    const rows=[...document.querySelectorAll('.orderItemRow')];
-    const items=[];
     const vendorEmail = String(me?.email || '').trim().toLowerCase();
-    rows.forEach(row=>{
+    const items=[];
+    [...document.querySelectorAll('.orderItemRow')].forEach(row=>{
       const sel=row.querySelector('.itemSelect');
       const sale=row.querySelector('.ventaInp');
       const qty=row.querySelector('.qtyInp');
       const sku=String(sel?.value||'').trim();
-      const s=Number(sale?.value||0);
+      const saleTotal=Number(sale?.value||0);
       const q=Number(qty?.value||0);
-      const prod=catalogMap?.[sku] || null;
-      if (!sku || !prod || s<=0 || q<=0) return;
+      if (!sku || saleTotal<=0 || q<=0) return;
+      const cat = catalogMap?.[sku] || {};
       items.push({
         sku,
-        title: String(prod.title || prod.name || sku).trim(),
+        title: String(cat.title || sel?.selectedOptions?.[0]?.textContent || sku).trim(),
         qty: q,
-        price_gs: s,
-        provider_price_gs: Number(prod.provider_price_gs || prod.real_cost_gs || prod.real_cost || 0),
-        provider_email: String(prod.provider_email || '').trim().toLowerCase(),
+        price_gs: saleTotal,
+        provider_price_gs: Number(cat.provider_price_gs || 0),
+        provider_email: String(cat.provider_email || '').trim().toLowerCase(),
         vendor_email: vendorEmail
       });
     });
@@ -4808,9 +4795,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (name === 'products') {
       loadCatalog();
     }
-    if (name === 'orders') {
-      try { refreshOrders(); } catch(_e) {}
-    }
     if (name === 'rates') {
       try { loadRates(); } catch(_e) {}
       try { loadClientPrices(); } catch(_e) {}
@@ -4828,7 +4812,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     const tok = localStorage.getItem(tokenKey);
     const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
-      email:o_email.value.trim(), obs:o_obs.value.trim(), items:getItems() };
+      email:o_email.value.trim(), obs:o_obs.value.trim(), delivery_fee_gs:Number(String(o_delivery.value||'0').replace(/[^\d]/g,''))||0, items:getItems() };
    
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
@@ -4849,7 +4833,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     apiRun
       .withSuccessHandler((res)=>{
-        toast(`✅ Pedido guardado${res?.id ? ' #'+res.id : ''}`);
+        toast(`✅ Pedido guardado${res?.id?` #${res.id}`:''}`);
         refreshOrders();
         refreshDashboard();
        
@@ -5118,12 +5102,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       if (meRole === 'DELIVERY') {
         const feeAsentado = Number(o.delivery_fee_gs||0);
         colVal = feeAsentado > 0 ? feeAsentado : (rateMap[norm(o.city)] || 0);
-      } else {
-        const totalGs = Number(o.total_gs || o.sale_total_gs || 0);
-        const costGs = Number(o.cost_total_gs || 0);
-        const deliveryGs = Number(o.delivery_fee_gs || 0);
-        colVal = Math.max(Number(o.commission_gs ?? (totalGs - costGs - deliveryGs)), 0);
-      }
+      } else { colVal = Number(o.commission_gs||0); }
 
       // ===== NUEVO: Mostrar proveedores para ADMIN, VENDEDOR, PROVEEDOR (con el nuevo formato) =====
       const providersHtml = o.provider_emails_list
@@ -5169,8 +5148,8 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
-        <td class="right">${nf(Number(o.total_gs || o.sale_total_gs || 0))}</td>
+        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td class="right">${nf(o.total_gs)}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
         <td>${stateSel}</td><td>${state2Sel}</td><td>${delSel}</td>
@@ -5672,7 +5651,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         tr.innerHTML=`
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
           <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
+          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
           <td>${stateSel}</td>
           <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
           <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
@@ -5764,12 +5743,13 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           renderCommissionsTable(visibles);
         })
         .withFailureHandler(e => toast(e.message || e))
-        .getVendorCommissions(tok, f, t, onlyNormalized, q);
+        .listCommissionsFlex(tok, f, t, vendorEmail, onlyNormalized, q, providerFilter);
     } else {
       // ADMIN/PROVEEDOR - comportamiento normal
       document.getElementById('vendor_email_box').classList.add('hidden');
       document.getElementById('vendor_email_admin_box').classList.remove('hidden');
       document.getElementById('commissions_title').textContent = '💰 Pago de comisiones';
+      loadVendorsForCommissionsFilter();
       const bulkActions = document.getElementById('bulkActions');
       if (bulkActions) bulkActions.classList.remove('hidden');
       const activeVendor = (document.getElementById('pc_vendor_admin')?.value || '').trim();
@@ -6420,52 +6400,90 @@ function renderPendingGuidesSimplified() {
   window.currentRendicionMonto = 0;
 
   function abrirGuiaLimpia(orderId) {
-    if (!orderId) return;
-   
+    const cached = findOrderInCaches(orderId);
+    if (cached) {
+      const text = formatGuideTextFromOrder(cached);
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      return;
+    }
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
-   
     toast('📋 Generando guía...');
-   
     apiRun
       .withSuccessHandler(function(resultado) {
         if (resultado.success && resultado.text) {
-          const blob = new Blob([resultado.text], {
-            type: 'text/plain;charset=utf-8'
-          });
+          const blob = new Blob([resultado.text], { type: 'text/plain;charset=utf-8' });
           const url = URL.createObjectURL(blob);
           window.open(url, '_blank');
           setTimeout(() => URL.revokeObjectURL(url), 10000);
         }
       })
-      .withFailureHandler(function(error) {
-        toast('Error: ' + error.message);
-      })
+      .withFailureHandler(function(error) { toast('Error: ' + error.message); })
       .getGuideCleanText(tok, orderId);
   }
 
   function copiarGuiaLimpia(orderId) {
+    const cached = findOrderInCaches(orderId);
+    const copyText = (txt) => navigator.clipboard.writeText(txt)
+      .then(() => toast('✅ Guía copiada'))
+      .catch(() => {
+        const textarea = document.createElement('textarea');
+        textarea.value = txt;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        toast('✅ Texto copiado ✓');
+      });
+    if (cached) { copyText(formatGuideTextFromOrder(cached)); return; }
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
-   
     apiRun
-      .withSuccessHandler(function(resultado) {
-        if (resultado.success && resultado.text) {
-          navigator.clipboard.writeText(resultado.text)
-            .then(() => toast('✅ Guía copiada'))
-            .catch(() => {
-              const textarea = document.createElement('textarea');
-              textarea.value = resultado.text;
-              document.body.appendChild(textarea);
-              textarea.select();
-              document.execCommand('copy');
-              document.body.removeChild(textarea);
-              toast('✅ Texto copiado ✓');
-            });
-        }
-      })
+      .withSuccessHandler(function(resultado) { if (resultado.success && resultado.text) copyText(resultado.text); })
       .withFailureHandler(error => toast('Error: ' + error.message))
       .getGuideCleanText(tok, orderId);
+  }
+
+
+  function resolveOrderDeliveryCharge(order){
+    const direct = Number(order?.delivery_fee_gs || order?.delivery_cost || 0);
+    if (direct > 0) return direct;
+    const city = String(order?.city || '').trim().toLowerCase();
+    const found = (clientCityPrices||[]).find(c => String(c.city||'').trim().toLowerCase() === city);
+    return Number(found?.price_gs || found?.price || 0);
+  }
+
+  function resolveOrderTotal(order){
+    return Number(order?.total_gs || order?.sale_total_gs || 0);
+  }
+
+  function formatGuideTextFromOrder(order){
+    if (!order) return '';
+    const items = Array.isArray(order.items) ? order.items : [];
+    const lines = [];
+    lines.push(`Pedido: ${order.id || ''}`);
+    lines.push(`Vendedor: ${order.vendor_email || order.created_by || ''}`);
+    lines.push(`Cliente: ${order.customer_name || ''}`);
+    lines.push(`Teléfono: ${order.phone || ''}`);
+    lines.push(`Ciudad: ${order.city || ''}`);
+    lines.push(`Calle: ${order.street || ''}`);
+    lines.push(`Barrio: ${order.district || ''}`);
+    lines.push(`Email: ${order.email || ''}`);
+    if (order.obs) lines.push(`Obs: ${order.obs}`);
+    lines.push('');
+    lines.push('Items:');
+    items.forEach(it => {
+      lines.push(`- ${it.title || it.sku || ''} — Cant: ${it.qty || 0} — Precio: ${nf(Number(it.price_gs || 0))} Gs`);
+    });
+    lines.push(`Total: ${nf(resolveOrderTotal(order))} Gs`);
+    return lines.join('\n');
+  }
+
+  function findOrderInCaches(orderId){
+    return (lastOrders||[]).find(o=>String(o.id)===String(orderId)) || (assignableOrders||[]).find(o=>String(o.id)===String(orderId)) || null;
   }
 
   // =========================
@@ -6604,30 +6622,52 @@ function renderPendingGuidesSimplified() {
 
   function generateBulkTXT() {
     const allSelected = [...selectedOrders, ...selectedGuides];
-    if (allSelected.length === 0) { toast('Seleccioná al menos una guía'); return; }
-    if (allSelected.length > MAX_BULK_GUIDES) { toast(`Máximo ${MAX_BULK_GUIDES} guías`); return; }
-    if (!confirm(`¿Generar TXT con ${allSelected.length} guías?`)) return;
-    const tok = localStorage.getItem(tokenKey);
-    toast(`📄 Generando TXT...`);
+    if (allSelected.length === 0) {
+      toast('Seleccioná al menos una guía');
+      return;
+    }
+    if (allSelected.length > MAX_BULK_GUIDES) {
+      toast(`Máximo ${MAX_BULK_GUIDES} guías`);
+      return;
+    }
     const txtBtn = document.getElementById('bulkTxtBtn');
     if (txtBtn) txtBtn.disabled = true;
+    const cachedOrders = allSelected.map(id => findOrderInCaches(id)).filter(Boolean);
+    if (cachedOrders.length === allSelected.length) {
+      const textOut = cachedOrders.map(formatGuideTextFromOrder).join('
+
+----------------------------------------
+
+');
+      const blob = new Blob([textOut], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `guias_${new Date().toISOString().slice(0,10)}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('✅ TXT descargado');
+      if (txtBtn) txtBtn.disabled = false;
+      return;
+    }
+    const tok = localStorage.getItem(tokenKey);
     apiRun
       .withSuccessHandler(function(result) {
-        try {
-          const text = String(result?.text || '');
-          if (!result || !result.success || !text) throw new Error('Sin contenido TXT');
-          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        if (result && result.success && result.text) {
+          const blob = new Blob([result.text], { type: 'text/plain;charset=utf-8' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `guias_${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.txt`;
+          a.download = `guias_${new Date().toISOString().slice(0,10)}.txt`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           setTimeout(() => URL.revokeObjectURL(url), 1000);
-          toast(`✅ TXT descargado`);
-        } catch (err) {
-          toast(`❌ Error al generar TXT: ${err.message || err}`);
+          toast('✅ TXT descargado');
+        } else {
+          toast('❌ Error al generar TXT');
         }
         if (txtBtn) txtBtn.disabled = false;
       })
@@ -8450,7 +8490,7 @@ function renderPendingGuidesSimplified() {
       tr.innerHTML=`
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
+        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
         <td>${stateSel}</td>
         <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
         <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
