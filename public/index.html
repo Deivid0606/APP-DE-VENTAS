@@ -3057,18 +3057,13 @@
     if (pcOnly && !pcOnly.value) pcOnly.value = 'PENDIENTE';
   }
 
-
-function openCommissionsView(){
-  show('commissions');
-  const pcOnly = document.getElementById('pc_only');
-  if (pcOnly && !pcOnly.value) pcOnly.value = 'PENDIENTE';
-  if (me?.role !== 'VENDEDOR') {
-    try { loadVendorsForCommissionsFilter(); } catch(_e) {}
-    try { loadProvidersForRequestFilters(); } catch(_e) {}
+  function openCommissionsView(){
+    show('commissions');
+    const pcOnly = document.getElementById('pc_only');
+    if (pcOnly && !pcOnly.value) pcOnly.value = 'PENDIENTE';
+    if (me?.role === 'VENDEDOR') loadCommissionsForVendor();
+    else loadCommissions();
   }
-  if (me?.role === 'VENDEDOR') loadCommissionsForVendor();
-  else loadCommissions();
-}
 
   function getCurrentOrdersFilters(){
     return {
@@ -3247,6 +3242,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       .login(li_email.value.trim(), li_pass.value, remember);
   }
   function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
+  let appAutoRefreshTimer = null;
+  function scheduleAutoRefresh(){
+    if (appAutoRefreshTimer) clearInterval(appAutoRefreshTimer);
+    appAutoRefreshTimer = setInterval(()=>{
+      if (document.hidden || !me) return;
+      try { refreshOrders(); } catch(_e){}
+      try { refreshDashboard(); } catch(_e){}
+      try { if (document.getElementById('rates') && !document.getElementById('rates').classList.contains('hidden')) { loadRates(); loadClientPrices(); } } catch(_e){}
+    }, 30000);
+  }
+  document.addEventListener('visibilitychange', ()=>{ if (!document.hidden && me) { try { refreshOrders(); } catch(_e){} try { refreshDashboard(); } catch(_e){} } });
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3378,6 +3384,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       loadClientPrices();
       refreshDashboard();
       refreshWallet();
+      scheduleAutoRefresh();
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
       if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
@@ -4683,27 +4690,31 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     return row;
   }
 
-  
-function getItems(){
-  const rows=[...document.querySelectorAll('.orderItemRow')]; const items=[];
-  rows.forEach(row=>{
-    const sel=row.querySelector('.itemSelect'); const sale=row.querySelector('.ventaInp'); const qty=row.querySelector('.qtyInp');
-    const sku=String(sel?.value||'').trim(); const s=Number(sale?.value||0); const q=Number(qty?.value||0);
-    const product = catalogMap[sku] || products.find(p => String(p.sku||'').trim()===sku) || null;
-    if (!sku || s<=0 || q<=0 || !product) return;
-    items.push({
-      sku,
-      title: String(product.title || product.name || sku),
-      qty:q,
-      price_gs:s,
-      provider_price_gs:Number(product.provider_price_gs || product.real_cost_gs || product.real_cost || 0),
-      provider_email:String(product.provider_email || '').trim().toLowerCase(),
-      vendor_email:String(me?.role === 'VENDEDOR' ? (me?.email || '') : '').trim().toLowerCase()
+  function getItems(){
+    const rows=[...document.querySelectorAll('.orderItemRow')];
+    const items=[];
+    const vendorEmail = String(me?.email || '').trim().toLowerCase();
+    rows.forEach(row=>{
+      const sel=row.querySelector('.itemSelect');
+      const sale=row.querySelector('.ventaInp');
+      const qty=row.querySelector('.qtyInp');
+      const sku=String(sel?.value||'').trim();
+      const s=Number(sale?.value||0);
+      const q=Number(qty?.value||0);
+      const prod=catalogMap?.[sku] || null;
+      if (!sku || !prod || s<=0 || q<=0) return;
+      items.push({
+        sku,
+        title: String(prod.title || prod.name || sku).trim(),
+        qty: q,
+        price_gs: s,
+        provider_price_gs: Number(prod.provider_price_gs || prod.real_cost_gs || prod.real_cost || 0),
+        provider_email: String(prod.provider_email || '').trim().toLowerCase(),
+        vendor_email: vendorEmail
+      });
     });
-  });
-  return items;
-}
-
+    return items;
+  }
  
   function recalcOrder(){
     if (!catalogMap || Object.keys(catalogMap).length === 0) {
@@ -4797,6 +4808,9 @@ function getItems(){
     if (name === 'products') {
       loadCatalog();
     }
+    if (name === 'orders') {
+      try { refreshOrders(); } catch(_e) {}
+    }
     if (name === 'rates') {
       try { loadRates(); } catch(_e) {}
       try { loadClientPrices(); } catch(_e) {}
@@ -4814,7 +4828,7 @@ function getItems(){
    
     const tok = localStorage.getItem(tokenKey);
     const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
-      email:o_email.value.trim(), obs:o_obs.value.trim(), delivery_fee_gs: Number(cleanMoney(o_delivery?.value || 0) || 0), vendor_email: (me?.role === 'VENDEDOR' ? (me?.email || '') : ''), items:getItems() };
+      email:o_email.value.trim(), obs:o_obs.value.trim(), items:getItems() };
    
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
@@ -4835,7 +4849,7 @@ function getItems(){
    
     apiRun
       .withSuccessHandler((res)=>{
-        toast(`✅ ${res?.message || ('Pedido #' + (res?.id || '') + ' guardado')}`);
+        toast(`✅ Pedido guardado${res?.id ? ' #'+res.id : ''}`);
         refreshOrders();
         refreshDashboard();
        
@@ -4893,16 +4907,6 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     }).withFailureHandler(e=>toast(e.message||e)).getGuideText(tok,orderId);
   }
 
-
-function normalizeOrderRow(o){
-  const total = Number(o?.total_gs ?? o?.sale_total_gs ?? 0);
-  const cost = Number(o?.cost_total_gs || 0);
-  const delivery = Number(o?.delivery_fee_gs || 0);
-  const commission = Math.max(Number(o?.commission_gs ?? (total - cost - delivery)), 0);
-  return Object.assign({}, o || {}, { total_gs: total, sale_total_gs: total, cost_total_gs: cost, delivery_fee_gs: delivery, commission_gs: commission });
-}
-function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
-
   // =========================
   // Pedidos (listado) - MODIFICADO CON COLUMNA DE PROVEEDORES
   // =========================
@@ -4911,13 +4915,13 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
       ? apiRun.withSuccessHandler(rows=>{
-          lastOrders=normalizeOrders(rows||[]);
+          lastOrders=rows||[];
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
       : apiRun.withSuccessHandler(rows=>{
-          lastOrders=normalizeOrders(rows||[]);
+          lastOrders=rows||[];
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
@@ -5013,7 +5017,7 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${dateShown}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td><td class="right">${nf(fee)}</td>
           <td>${stateSel}</td>
           <td>
@@ -5068,7 +5072,7 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
             <input type="checkbox" class="bulk-checkbox" data-id="${o.id}" data-type="orders" title="Seleccionar para impresión masiva">
           </td>
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
-          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||o.created_by||''}</td>
+          <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.created_by||''}</td>
           <td class="right">${nf(o.total_gs)}</td>
           <td>${providersHtml}</td> <!-- NUEVA COLUMNA -->
           <td>${state2Sel}</td>
@@ -5114,7 +5118,12 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
       if (meRole === 'DELIVERY') {
         const feeAsentado = Number(o.delivery_fee_gs||0);
         colVal = feeAsentado > 0 ? feeAsentado : (rateMap[norm(o.city)] || 0);
-      } else { colVal = Number(o.commission_gs||0); }
+      } else {
+        const totalGs = Number(o.total_gs || o.sale_total_gs || 0);
+        const costGs = Number(o.cost_total_gs || 0);
+        const deliveryGs = Number(o.delivery_fee_gs || 0);
+        colVal = Math.max(Number(o.commission_gs ?? (totalGs - costGs - deliveryGs)), 0);
+      }
 
       // ===== NUEVO: Mostrar proveedores para ADMIN, VENDEDOR, PROVEEDOR (con el nuevo formato) =====
       const providersHtml = o.provider_emails_list
@@ -5160,8 +5169,8 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
-        <td class="right">${nf(o.total_gs)}</td>
+        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td class="right">${nf(Number(o.total_gs || o.sale_total_gs || 0))}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
         <td>${stateSel}</td><td>${state2Sel}</td><td>${delSel}</td>
@@ -5663,7 +5672,7 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
         tr.innerHTML=`
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
           <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
+          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
           <td>${stateSel}</td>
           <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
           <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
@@ -6254,7 +6263,7 @@ function normalizeOrders(rows){ return (rows||[]).map(normalizeOrderRow); }
     if (Array.isArray(lastOrders) && lastOrders.length){
       afterOrders(lastOrders);
     } else {
-      apiRun.withSuccessHandler(rows=>{ lastOrders=normalizeOrders(rows); afterOrders(lastOrders); })
+      apiRun.withSuccessHandler(rows=>{ lastOrders=rows; afterOrders(rows); })
         .withFailureHandler(e=>toast(e.message||e)).listOrders(tok);
     }
   }
@@ -6595,49 +6604,30 @@ function renderPendingGuidesSimplified() {
 
   function generateBulkTXT() {
     const allSelected = [...selectedOrders, ...selectedGuides];
-   
-    if (allSelected.length === 0) {
-      toast('Seleccioná al menos una guía');
-      return;
-    }
-   
-    if (allSelected.length > MAX_BULK_GUIDES) {
-      toast(`Máximo ${MAX_BULK_GUIDES} guías`);
-      return;
-    }
-   
+    if (allSelected.length === 0) { toast('Seleccioná al menos una guía'); return; }
+    if (allSelected.length > MAX_BULK_GUIDES) { toast(`Máximo ${MAX_BULK_GUIDES} guías`); return; }
     if (!confirm(`¿Generar TXT con ${allSelected.length} guías?`)) return;
-   
     const tok = localStorage.getItem(tokenKey);
     toast(`📄 Generando TXT...`);
-   
     const txtBtn = document.getElementById('bulkTxtBtn');
     if (txtBtn) txtBtn.disabled = true;
-   
     apiRun
       .withSuccessHandler(function(result) {
-        if (result && result.success) {
-          const binaryString = atob(result.base64Data);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-         
-          const blob = new Blob([bytes], { type: 'text/plain;charset=utf-8' });
+        try {
+          const text = String(result?.text || '');
+          if (!result || !result.success || !text) throw new Error('Sin contenido TXT');
+          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
           const url = URL.createObjectURL(blob);
-         
           const a = document.createElement('a');
           a.href = url;
-          a.download = result.fileName;
+          a.download = `guias_${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.txt`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
-         
           setTimeout(() => URL.revokeObjectURL(url), 1000);
           toast(`✅ TXT descargado`);
-         
-        } else {
-          toast('❌ Error al generar TXT');
+        } catch (err) {
+          toast(`❌ Error al generar TXT: ${err.message || err}`);
         }
         if (txtBtn) txtBtn.disabled = false;
       })
@@ -7013,7 +7003,7 @@ function renderPendingGuidesSimplified() {
       if (filters.providerEmail) {
         apiRun
           .withSuccessHandler(orders => {
-            lastOrders = normalizeOrders(orders);
+            lastOrders = orders;
             renderOrdersLast();
             toast(`✅ ${orders.length} pedidos encontrados`);
           })
@@ -7022,7 +7012,7 @@ function renderPendingGuidesSimplified() {
       } else {
         apiRun
           .withSuccessHandler(orders => {
-            lastOrders = normalizeOrders(orders);
+            lastOrders = orders;
             renderOrdersLast();
             toast('✅ Filtros aplicados');
           })
@@ -8460,7 +8450,7 @@ function renderPendingGuidesSimplified() {
       tr.innerHTML=`
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
+        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
         <td>${stateSel}</td>
         <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
         <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
