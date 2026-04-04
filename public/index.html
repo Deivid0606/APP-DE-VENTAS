@@ -3061,8 +3061,6 @@
     show('commissions');
     const pcOnly = document.getElementById('pc_only');
     if (pcOnly && !pcOnly.value) pcOnly.value = 'PENDIENTE';
-    try { loadVendorsForCommissionsFilter(); } catch(_e) {}
-    try { loadProvidersForFilters(); } catch(_e) {}
     if (me?.role === 'VENDEDOR') loadCommissionsForVendor();
     else loadCommissions();
   }
@@ -3614,35 +3612,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   // ===== NUEVO: Cargar vendedores para filtro de comisiones (ADMIN/PROVEEDOR) =====
   function loadVendorsForCommissionsFilter() {
     const tok = localStorage.getItem(tokenKey);
-    const sel = document.getElementById('pc_vendor_admin');
-    if (!sel) return;
-
-    const renderOptions = (users) => {
-      const fallbackFromOrders = [...new Set((lastOrders || []).map(o => String(o.vendor_email || o.created_by || '').trim().toLowerCase()).filter(Boolean))]
-        .map(email => ({ email, name: '' }));
-      const mergedMap = new Map();
-      [...(users || []), ...fallbackFromOrders].forEach(u => {
-        const email = String(u?.email || '').trim().toLowerCase();
-        if (!email) return;
-        if (!mergedMap.has(email)) mergedMap.set(email, { email, name: u?.name || '' });
-      });
-      const merged = [...mergedMap.values()].sort((a,b)=>String(a.email||'').localeCompare(String(b.email||'')));
-      let opt = '<option value="">Todos los vendedores</option>';
-      opt += merged.map(u => `<option value="${u.email}">${u.name || u.email} ${u.name ? `(${u.email})` : ''}</option>`).join('');
-      sel.innerHTML = opt;
-    };
-
-    if (!tok) {
-      renderOptions([]);
-      return;
-    }
-
+    if (!tok) return;
     apiRun
-      .withSuccessHandler(users => renderOptions(users))
-      .withFailureHandler(e => {
-        console.error('Error cargando vendedores:', e);
-        renderOptions([]);
+      .withSuccessHandler(users => {
+        const sel = document.getElementById('pc_vendor_admin');
+        if (!sel) return;
+        let opt = '<option value="">Todos los vendedores</option>';
+        (users || []).sort((a,b)=>String(a.email||'').toLowerCase().localeCompare(String(b.email||'').toLowerCase()));
+        opt += (users || []).map(u => `<option value="${u.email}">${u.name || 'Sin nombre'} (${u.email})</option>`).join('');
+        sel.innerHTML = opt;
       })
+      .withFailureHandler(e => console.error('Error cargando vendedores:', e))
       .listUsersByRole(tok, 'VENDEDOR');
   }
 
@@ -4738,33 +4718,26 @@ vis('navProd', isAuthed && role!=='DELIVERY');
  
   function recalcOrder(){
     if (!catalogMap || Object.keys(catalogMap).length === 0) {
+      // Catálogo no cargado aún
       return;
     }
-
+   
     const rows=[...document.querySelectorAll('.orderItemRow')];
     let totalVenta=0, totalProv=0;
     rows.forEach(row=>{
-      const sel=row.querySelector('.itemSelect');
-      const sale=row.querySelector('.ventaInp');
-      const qty=row.querySelector('.qtyInp');
-      const provSpan=row.querySelector('.provUnit');
-      const subProv=row.querySelector('.subProv');
-      const sku=sel?.value||'';
-      const provUnit=Number(catalogMap[sku]?.provider_price_gs||catalogMap[sku]?.real_cost_gs||catalogMap[sku]?.real_cost||0);
+      const sel=row.querySelector('.itemSelect'); const sale=row.querySelector('.ventaInp'); const qty=row.querySelector('.qtyInp');
+      const provSpan=row.querySelector('.provUnit'); const subProv=row.querySelector('.subProv');
+      const sku=sel?.value||''; const provUnit=Number(catalogMap[sku]?.provider_price_gs||0);
       if (provSpan) provSpan.textContent=nf(provUnit);
-      const s=Number(sale?.value||0);
-      const q=Math.max(Number(qty?.value||0), 0);
-      totalVenta += (s*q);
-      totalProv += (provUnit*q);
-      if (subProv) subProv.textContent=nf(provUnit*q);
+      const s=Number(sale?.value||0); const q=Number(qty?.value||0);
+      totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city = String(o_city?.value || '').trim();
-    const del = Number(getClientCityPrice(city) || 0);
-    const commission = Math.max(totalVenta - totalProv - del, 0);
+    const del = getClientCityPrice(city);
     cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
     o_total.value = nf(totalVenta);
     o_delivery.value = nf(del);
-    o_commission.value = nf(commission);
+    o_commission.value = nf(totalVenta - (totalProv + del));
   }
 
   function resetOrderPrefillFlag(){
@@ -4852,60 +4825,35 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       toast('Ya se está guardando un pedido, esperá...');
       return;
     }
-
+   
     const tok = localStorage.getItem(tokenKey);
-    const items = getItems();
-    const saleTotal = items.reduce((acc, it) => acc + (Number(it.price_gs || 0) * Number(it.qty || 0)), 0);
-    const costTotal = items.reduce((acc, it) => acc + (Number(it.provider_price_gs || 0) * Number(it.qty || 0)), 0);
-    const deliveryFee = Number(getClientCityPrice(o_city.value.trim()) || 0);
-    const commission = Math.max(saleTotal - costTotal - deliveryFee, 0);
-    const vendorEmail = String(me?.email || items.find(it => it.vendor_email)?.vendor_email || '').trim().toLowerCase();
-    const providerEmails = [...new Set(items.map(it => String(it.provider_email || '').trim().toLowerCase()).filter(Boolean))];
-
-    const order={
-      customer_name:o_customer.value.trim(),
-      phone:o_phone.value.trim(),
-      city:o_city.value.trim(),
-      street:o_street.value.trim(),
-      district:o_district.value.trim(),
-      email:o_email.value.trim(),
-      obs:o_obs.value.trim(),
-      items,
-      total_gs: saleTotal,
-      sale_total_gs: saleTotal,
-      cost_total_gs: costTotal,
-      delivery_fee_gs: deliveryFee,
-      commission_gs: commission,
-      vendor_email: vendorEmail,
-      created_by: vendorEmail,
-      provider_emails_list: providerEmails.join(',')
-    };
-
+    const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
+      email:o_email.value.trim(), obs:o_obs.value.trim(), items:getItems() };
+   
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
       return;
     }
-
+   
     if (order.items.length===0){
       toast('Agrega al menos 1 ítem');
       return;
     }
-
+   
+    // Bloquear botón
     isSavingOrder = true;
-    const saveBtn = document.querySelector('#view-order button[onclick="saveOrder()"]') || document.querySelector('button[onclick="saveOrder()"]');
-    const originalText = saveBtn ? saveBtn.textContent : 'Guardar pedido';
-    if (saveBtn) {
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Guardando...';
-    }
-
+    const saveBtn = document.querySelector('button[onclick="saveOrder()"]');
+    const originalText = saveBtn.textContent;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Guardando...';
+   
     apiRun
       .withSuccessHandler((res)=>{
         toast(`✅ Pedido guardado${res?.id ? ' #'+res.id : ''}`);
         refreshOrders();
         refreshDashboard();
-        try { openCommissionsView(); } catch(_e) {}
-
+       
+        // Limpiar formulario
         o_customer.value='';
         o_phone.value='';
         o_email.value='';
@@ -4915,21 +4863,19 @@ vis('navProd', isAuthed && role!=='DELIVERY');
         itemsBox.innerHTML='';
         resetOrderPrefillFlag();
         addItemRow();
-        recalcOrder();
-
+       
+        // Re-habilitar botón
         isSavingOrder = false;
-        if (saveBtn) {
-          saveBtn.disabled = false;
-          saveBtn.textContent = originalText;
-        }
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalText;
       })
       .withFailureHandler(e=>{
-        toast('❌ Error: ' + (e.message || e));
+        toast('❌ Error: ' + e.message);
+       
+        // Re-habilitar botón
         isSavingOrder = false;
-        if (saveBtn) {
-          saveBtn.disabled = false;
-          saveBtn.textContent = originalText;
-        }
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalText;
       })
       .addOrder(tok,order);
   }
@@ -6473,135 +6419,52 @@ function renderPendingGuidesSimplified() {
   // Neto a rendir calculado en Cierres (para Control de Rendición)
   window.currentRendicionMonto = 0;
 
-
-  function formatOrderIdForGuide(order) {
-    const raw = String(order?.id || '').trim();
-    if (!raw) return '';
-    return /^[a-zA-Z]/.test(raw) ? raw : `A${raw}`;
-  }
-
-  function parseOrderItems(order) {
-    if (Array.isArray(order?.items)) return order.items;
-    const raw = order?.items_json ?? order?.itemsJson ?? order?.items_text ?? '';
-    if (Array.isArray(raw)) return raw;
-    if (!raw) return [];
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return Array.isArray(parsed) ? parsed : [];
-    } catch(_e) {
-      return [];
-    }
-  }
-
-  function formatGsForGuide(value) {
-    return `${nf(Number(value || 0))} Gs`;
-  }
-
-  function buildCleanGuideTextFromOrder(order) {
-    if (!order) return '';
-    const items = parseOrderItems(order);
-    const lines = [];
-    lines.push(`Pedido: ${formatOrderIdForGuide(order)}`);
-    lines.push(`Vendedor: ${order.vendor_email || order.created_by || ''}`);
-    lines.push(`Cliente: ${order.customer_name || ''}`);
-    lines.push(`Teléfono: ${order.phone || ''}`);
-    lines.push(`Ciudad: ${order.city || ''}`);
-    lines.push(`Calle: ${order.street || ''}`);
-    lines.push(`Barrio: ${order.district || ''}`);
-    lines.push(`Email: ${order.email || ''}`);
-    lines.push('Items:');
-    if (items.length) {
-      items.forEach(it => {
-        const title = String(it.title || it.name || it.sku || 'Ítem').trim();
-        const qty = Number(it.qty || it.quantity || 0) || 0;
-        const price = Number(it.price_gs || it.sale_gs || it.price || 0) || 0;
-        lines.push(`- ${title} — Cant: ${qty} — Precio: ${formatGsForGuide(price)}`);
-      });
-    } else {
-      lines.push('- Sin ítems');
-    }
-    const total = Number(order.total_gs || order.sale_total_gs || items.reduce((acc, it) => acc + ((Number(it.price_gs || it.sale_gs || it.price || 0)) * (Number(it.qty || it.quantity || 0))), 0));
-    lines.push(`Total: ${formatGsForGuide(total)}`);
-    return lines.join('
-');
-  }
-
-  function findOrderById(orderId) {
-    return (lastOrders || []).find(o => String(o.id) === String(orderId));
-  }
-
   function abrirGuiaLimpia(orderId) {
     if (!orderId) return;
-
-    const order = findOrderById(orderId);
-    const fallbackText = buildCleanGuideTextFromOrder(order);
+   
     const tok = localStorage.getItem(tokenKey);
-
-    const openText = (text) => {
-      const finalText = String(text || fallbackText || '').trim();
-      if (!finalText) {
-        toast('No se pudo generar la guía');
-        return;
-      }
-      const blob = new Blob([finalText], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-    };
-
-    if (!tok) {
-      openText(fallbackText);
-      return;
-    }
-
+    if (!tok) { toast('No estás autenticado'); return; }
+   
     toast('📋 Generando guía...');
+   
     apiRun
       .withSuccessHandler(function(resultado) {
-        const backendText = resultado?.text || resultado;
-        openText(backendText || fallbackText);
+        if (resultado.success && resultado.text) {
+          const blob = new Blob([resultado.text], {
+            type: 'text/plain;charset=utf-8'
+          });
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank');
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+        }
       })
-      .withFailureHandler(function() {
-        openText(fallbackText);
+      .withFailureHandler(function(error) {
+        toast('Error: ' + error.message);
       })
       .getGuideCleanText(tok, orderId);
   }
 
   function copiarGuiaLimpia(orderId) {
-    const order = findOrderById(orderId);
-    const fallbackText = buildCleanGuideTextFromOrder(order);
     const tok = localStorage.getItem(tokenKey);
-
-    const copyText = (text) => {
-      const finalText = String(text || fallbackText || '').trim();
-      if (!finalText) {
-        toast('No se pudo copiar la guía');
-        return;
-      }
-      navigator.clipboard.writeText(finalText)
-        .then(() => toast('✅ Guía copiada'))
-        .catch(() => {
-          const textarea = document.createElement('textarea');
-          textarea.value = finalText;
-          document.body.appendChild(textarea);
-          textarea.select();
-          document.execCommand('copy');
-          document.body.removeChild(textarea);
-          toast('✅ Texto copiado ✓');
-        });
-    };
-
-    if (!tok) {
-      copyText(fallbackText);
-      return;
-    }
-
+    if (!tok) { toast('No estás autenticado'); return; }
+   
     apiRun
       .withSuccessHandler(function(resultado) {
-        copyText((resultado && resultado.text) || resultado || fallbackText);
+        if (resultado.success && resultado.text) {
+          navigator.clipboard.writeText(resultado.text)
+            .then(() => toast('✅ Guía copiada'))
+            .catch(() => {
+              const textarea = document.createElement('textarea');
+              textarea.value = resultado.text;
+              document.body.appendChild(textarea);
+              textarea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textarea);
+              toast('✅ Texto copiado ✓');
+            });
+        }
       })
-      .withFailureHandler(function() {
-        copyText(fallbackText);
-      })
+      .withFailureHandler(error => toast('Error: ' + error.message))
       .getGuideCleanText(tok, orderId);
   }
 
@@ -8418,63 +8281,6 @@ function renderPendingGuidesSimplified() {
       document.getElementById('btnDesmarcarPagado').classList.add('hidden');
       document.getElementById('rendicion_nota').value = '';
       window.currentRendicionMonto = 0;
-
-
-  function formatOrderIdForGuide(order) {
-    const raw = String(order?.id || '').trim();
-    if (!raw) return '';
-    return /^[a-zA-Z]/.test(raw) ? raw : `A${raw}`;
-  }
-
-  function parseOrderItems(order) {
-    if (Array.isArray(order?.items)) return order.items;
-    const raw = order?.items_json ?? order?.itemsJson ?? order?.items_text ?? '';
-    if (Array.isArray(raw)) return raw;
-    if (!raw) return [];
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return Array.isArray(parsed) ? parsed : [];
-    } catch(_e) {
-      return [];
-    }
-  }
-
-  function formatGsForGuide(value) {
-    return `${nf(Number(value || 0))} Gs`;
-  }
-
-  function buildCleanGuideTextFromOrder(order) {
-    if (!order) return '';
-    const items = parseOrderItems(order);
-    const lines = [];
-    lines.push(`Pedido: ${formatOrderIdForGuide(order)}`);
-    lines.push(`Vendedor: ${order.vendor_email || order.created_by || ''}`);
-    lines.push(`Cliente: ${order.customer_name || ''}`);
-    lines.push(`Teléfono: ${order.phone || ''}`);
-    lines.push(`Ciudad: ${order.city || ''}`);
-    lines.push(`Calle: ${order.street || ''}`);
-    lines.push(`Barrio: ${order.district || ''}`);
-    lines.push(`Email: ${order.email || ''}`);
-    lines.push('Items:');
-    if (items.length) {
-      items.forEach(it => {
-        const title = String(it.title || it.name || it.sku || 'Ítem').trim();
-        const qty = Number(it.qty || it.quantity || 0) || 0;
-        const price = Number(it.price_gs || it.sale_gs || it.price || 0) || 0;
-        lines.push(`- ${title} — Cant: ${qty} — Precio: ${formatGsForGuide(price)}`);
-      });
-    } else {
-      lines.push('- Sin ítems');
-    }
-    const total = Number(order.total_gs || order.sale_total_gs || items.reduce((acc, it) => acc + ((Number(it.price_gs || it.sale_gs || it.price || 0)) * (Number(it.qty || it.quantity || 0))), 0));
-    lines.push(`Total: ${formatGsForGuide(total)}`);
-    return lines.join('
-');
-  }
-
-  function findOrderById(orderId) {
-    return (lastOrders || []).find(o => String(o.id) === String(orderId));
-  }
       return;
     }
 
