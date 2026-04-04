@@ -83,23 +83,24 @@ async function listOrdersBase(user, fromISO, toISO, q, onlyStatus = '', onlyDeli
   const { data, error } = await query;
   if (error) throw error;
 
-  const rows = (data || []).map((o) => {
-    const total_gs = Number(o.total_gs ?? o.sale_total_gs ?? 0);
-    const cost_total_gs = Number(o.cost_total_gs || 0);
-    const delivery_fee_gs = Number(o.delivery_fee_gs || 0);
-    const commission_gs = Math.max(total_gs - cost_total_gs - delivery_fee_gs, 0);
-    return {
-      ...o,
-      total_gs,
-      sale_total_gs: total_gs,
-      cost_total_gs,
-      delivery_fee_gs,
-      commission_gs,
-      assigned_delivery: o.assigned_delivery || '',
-      items: o.order_items || [],
-      items_json: JSON.stringify(o.order_items || [])
-    };
-  });
+  
+const rows = (data || []).map((o) => {
+  const sale_total_gs = Number(o.sale_total_gs || 0);
+  const cost_total_gs = Number(o.cost_total_gs || 0);
+  const delivery_fee_gs = Number(o.delivery_fee_gs || 0);
+  const commission_gs = Math.max(sale_total_gs - cost_total_gs - delivery_fee_gs, 0);
+  return {
+    ...o,
+    assigned_delivery: o.assigned_delivery || '',
+    items: o.order_items || [],
+    items_json: JSON.stringify(o.order_items || []),
+    total_gs: sale_total_gs,
+    commission_gs,
+    sale_total_gs,
+    cost_total_gs,
+    delivery_fee_gs
+  };
+});
   return filterOrdersInMemory(rows, q);
 }
 
@@ -391,6 +392,7 @@ async function dispatch(fn, args) {
         source_status: order.source_status || '',
         sale_total_gs: totals.sale_total_gs,
         cost_total_gs: totals.cost_total_gs,
+        delivery_fee_gs: Number(order.delivery_fee_gs || order.deliveryCharged || order.delivery_fee || 0),
         status: order.status || 'PENDIENTE',
         status2: order.status2 || 'GUIA PENDIENTE',
         created_by: user.email
@@ -409,7 +411,7 @@ async function dispatch(fn, args) {
       }));
       if (itemsRows.length) await supabase.from('order_items').insert(itemsRows).throwOnError();
       await logNews('ORDER_CREATED', `Pedido #${data.id} creado`, data.id, user.email);
-      return { id: data.id, total_gs: row.sale_total_gs, commission_gs: Math.max(Number(row.sale_total_gs||0) - Number(row.cost_total_gs||0), 0) };
+      return { id: data.id, message: `Pedido #${data.id} guardado` };
     },
 
     async updateOrder(token, orderId, patch) {
@@ -525,7 +527,7 @@ async function dispatch(fn, args) {
         }, { onConflict: 'order_id' }).throwOnError();
       }
       await logNews('ORDER_STATUS', `Pedido #${orderId} → ${status}`, orderId, user.email);
-      return data;
+      return { ...data, commission_gs: Math.max(Number(data.sale_total_gs || 0) - Number(data.cost_total_gs || 0) - Number(data.delivery_fee_gs || 0), 0), total_gs: Number(data.sale_total_gs || 0) };
     },
 
     async updateOrderStatus2(token, orderId, status2) {
@@ -747,7 +749,37 @@ async function dispatch(fn, args) {
       if (only === 'PENDIENTE') query = query.eq('paid', false);
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).filter((x) => !q || JSON.stringify(x).toLowerCase().includes(String(q).toLowerCase()));
+      
+return (data || [])
+  .map((x) => {
+    const ord = x.orders || {};
+    const total_gs = Number(ord.sale_total_gs || ord.total_gs || 0);
+    const cost_total_gs = Number(ord.cost_total_gs || 0);
+    const delivery_fee_gs = Number(ord.delivery_fee_gs || 0);
+    const commission_gs = Number(x.amount_gs || Math.max(total_gs - cost_total_gs - delivery_fee_gs, 0));
+    return {
+      ...ord,
+      ...x,
+      id: ord.id || x.order_id,
+      customer_name: ord.customer_name || '',
+      city: ord.city || '',
+      vendor_email: x.vendor_email || ord.vendor_email || '',
+      provider_email: x.provider_email || ord.provider_email || '',
+      provider_emails_list: ord.provider_emails_list || x.provider_email || '',
+      assigned_delivery: ord.assigned_delivery || '',
+      total_gs,
+      sale_total_gs: total_gs,
+      cost_total_gs,
+      delivery_fee_gs,
+      commission_gs,
+      created_at: ord.created_at || x.created_at,
+      status: ord.status || x.order_status || '',
+      status2: ord.status2 || '',
+      commission_paid: !!x.paid,
+      paid_at: x.paid_at || null
+    };
+  })
+  .filter((x) => !q || JSON.stringify(x).toLowerCase().includes(String(q).toLowerCase()));
     },
 
     async payVendorCommission(token, orderId, paid) {
@@ -761,9 +793,9 @@ async function dispatch(fn, args) {
     async getVendorCommissions(token, vendorEmail) {
       const user = await requireUser(token);
       if (user.role === 'VENDEDOR') vendorEmail = user.email;
-      const { data, error } = await supabase.from('vendor_commissions').select('*').eq('vendor_email', norm(vendorEmail));
+      const { data, error } = await supabase.from('vendor_commissions').select('*, orders(*)').eq('vendor_email', norm(vendorEmail));
       if (error) throw error;
-      return data || [];
+      return (data || []).map((x) => { const ord = x.orders || {}; const total_gs = Number(ord.sale_total_gs || ord.total_gs || 0); const cost_total_gs = Number(ord.cost_total_gs || 0); const delivery_fee_gs = Number(ord.delivery_fee_gs || 0); return { ...ord, ...x, id: ord.id || x.order_id, total_gs, sale_total_gs: total_gs, cost_total_gs, delivery_fee_gs, commission_gs: Number(x.amount_gs || Math.max(total_gs - cost_total_gs - delivery_fee_gs, 0)), commission_paid: !!x.paid, paid_at: x.paid_at || null }; });
     },
 
     async getVendorProviderBalances(token, vendorEmail, fromISO = '', toISO = '') {
