@@ -3242,6 +3242,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       .login(li_email.value.trim(), li_pass.value, remember);
   }
   function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
+  let appAutoRefreshTimer = null;
+  function scheduleAutoRefresh(){
+    if (appAutoRefreshTimer) clearInterval(appAutoRefreshTimer);
+    appAutoRefreshTimer = setInterval(()=>{
+      if (document.hidden || !me) return;
+      try { refreshOrders(); } catch(_e){}
+      try { refreshDashboard(); } catch(_e){}
+      try { if (document.getElementById('rates') && !document.getElementById('rates').classList.contains('hidden')) { loadRates(); loadClientPrices(); } } catch(_e){}
+    }, 30000);
+  }
+  document.addEventListener('visibilitychange', ()=>{ if (!document.hidden && me) { try { refreshOrders(); } catch(_e){} try { refreshDashboard(); } catch(_e){} } });
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3373,6 +3384,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       loadClientPrices();
       refreshDashboard();
       refreshWallet();
+      scheduleAutoRefresh();
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
       if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
@@ -4679,7 +4691,9 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function getItems(){
-    const rows=[...document.querySelectorAll('.orderItemRow')]; const items=[];
+    const rows=[...document.querySelectorAll('.orderItemRow')];
+    const items=[];
+    const vendorEmail = String(me?.email || '').trim().toLowerCase();
     rows.forEach(row=>{
       const sel=row.querySelector('.itemSelect');
       const sale=row.querySelector('.ventaInp');
@@ -4687,53 +4701,19 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       const sku=String(sel?.value||'').trim();
       const s=Number(sale?.value||0);
       const q=Number(qty?.value||0);
-      const product = sku ? (catalogMap[sku] || {}) : {};
-      if (!sku || s<=0 || q<=0) return;
+      const prod=catalogMap?.[sku] || null;
+      if (!sku || !prod || s<=0 || q<=0) return;
       items.push({
         sku,
-        title: String(product.title || sku),
+        title: String(prod.title || prod.name || sku).trim(),
         qty: q,
         price_gs: s,
-        provider_price_gs: Number(product.provider_price_gs || 0),
-        provider_email: String(product.provider_email || '').trim().toLowerCase(),
-        vendor_email: String(me?.email || '').trim().toLowerCase()
+        provider_price_gs: Number(prod.provider_price_gs || prod.real_cost_gs || prod.real_cost || 0),
+        provider_email: String(prod.provider_email || '').trim().toLowerCase(),
+        vendor_email: vendorEmail
       });
     });
     return items;
-  }
-
-  function effectiveDeliveryFee(order){
-    const direct = Number(order?.delivery_fee_gs || order?.delivery_cost || 0);
-    if (direct > 0) return direct;
-    const city = String(order?.city || '').trim();
-    return city ? Number(getClientCityPrice(city) || 0) : 0;
-  }
-
-  function effectiveTotal(order){
-    return Number(order?.total_gs || order?.sale_total_gs || 0);
-  }
-
-  function effectiveCost(order){
-    if (Number(order?.cost_total_gs || 0) > 0) return Number(order.cost_total_gs || 0);
-    const items = Array.isArray(order?.items) ? order.items : [];
-    return items.reduce((sum,it)=>sum + Number(it.qty||0) * Number(it.provider_price_gs || it.cost_price || 0), 0);
-  }
-
-  function effectiveCommission(order){
-    const total = effectiveTotal(order);
-    const cost = effectiveCost(order);
-    const fee = effectiveDeliveryFee(order);
-    return Math.max(total - cost - fee, 0);
-  }
-
-  function normalizeOrderForUI(order){
-    const o = Object.assign({}, order || {});
-    o.total_gs = effectiveTotal(o);
-    o.cost_total_gs = effectiveCost(o);
-    o.delivery_fee_gs = effectiveDeliveryFee(o);
-    o.commission_gs = effectiveCommission(o);
-    o.vendor_email = o.vendor_email || o.created_by || '';
-    return o;
   }
  
   function recalcOrder(){
@@ -4750,7 +4730,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       const sku=sel?.value||''; const provUnit=Number(catalogMap[sku]?.provider_price_gs||0);
       if (provSpan) provSpan.textContent=nf(provUnit);
       const s=Number(sale?.value||0); const q=Number(qty?.value||0);
-      totalVenta+=s*q; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
+      totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city = String(o_city?.value || '').trim();
     const del = getClientCityPrice(city);
@@ -4828,6 +4808,9 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (name === 'products') {
       loadCatalog();
     }
+    if (name === 'orders') {
+      try { refreshOrders(); } catch(_e) {}
+    }
     if (name === 'rates') {
       try { loadRates(); } catch(_e) {}
       try { loadClientPrices(); } catch(_e) {}
@@ -4866,7 +4849,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
    
     apiRun
       .withSuccessHandler((res)=>{
-        toast(`✅ Pedido guardado${res?.id ? ' #' + res.id : ''}`);
+        toast(`✅ Pedido guardado${res?.id ? ' #'+res.id : ''}`);
         refreshOrders();
         refreshDashboard();
        
@@ -4932,13 +4915,13 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     const filters = getCurrentOrdersFilters();
     const runner = (me?.role === 'PROVEEDOR')
       ? apiRun.withSuccessHandler(rows=>{
-          lastOrders=(rows||[]).map(normalizeOrderForUI);
+          lastOrders=rows||[];
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
         }).withFailureHandler(e=>toast(e.message||e)).listProviderOrders(tok, filters.fromISO, filters.toISO, filters.q, '', '')
       : apiRun.withSuccessHandler(rows=>{
-          lastOrders=(rows||[]).map(normalizeOrderForUI);
+          lastOrders=rows||[];
           renderOrdersLast();
           renderPendingGuidesSimplified();
           markUpdated();
@@ -5133,8 +5116,14 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
 
       let colVal;
       if (meRole === 'DELIVERY') {
-        colVal = effectiveDeliveryFee(o);
-      } else { colVal = effectiveCommission(o); }
+        const feeAsentado = Number(o.delivery_fee_gs||0);
+        colVal = feeAsentado > 0 ? feeAsentado : (rateMap[norm(o.city)] || 0);
+      } else {
+        const totalGs = Number(o.total_gs || o.sale_total_gs || 0);
+        const costGs = Number(o.cost_total_gs || 0);
+        const deliveryGs = Number(o.delivery_fee_gs || 0);
+        colVal = Math.max(Number(o.commission_gs ?? (totalGs - costGs - deliveryGs)), 0);
+      }
 
       // ===== NUEVO: Mostrar proveedores para ADMIN, VENDEDOR, PROVEEDOR (con el nuevo formato) =====
       const providersHtml = o.provider_emails_list
@@ -5180,8 +5169,8 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
-        <td class="right">${nf(o.total_gs)}</td>
+        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td class="right">${nf(Number(o.total_gs || o.sale_total_gs || 0))}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
         <td>${stateSel}</td><td>${state2Sel}</td><td>${delSel}</td>
@@ -5664,7 +5653,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       /* === NUEVO: KPIs de Pago de comisiones (cantidad y suma de comisiones) === */
       const pcCnt = visibles.length;
       let pcSum = 0;
-      visibles.forEach(o => { pcSum += effectiveCommission(o); });
+      visibles.forEach(o => { pcSum += Number(o.commission_gs || 0); });
       const kCntEl = document.getElementById('pc_k_cnt');
       const kSumEl = document.getElementById('pc_k_sum');
       if (kCntEl) kCntEl.textContent = nf(pcCnt);
@@ -5683,7 +5672,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         tr.innerHTML=`
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
           <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-          <td>${o.assigned_delivery||''}</td><td class="right">${nf(effectiveTotal(o))}</td><td class="right">${nf(effectiveCommission(o))}</td>
+          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
           <td>${stateSel}</td>
           <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
           <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
@@ -5766,27 +5755,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
 
       apiRun
         .withSuccessHandler(rows => {
-          const visibles = (rows || []).map(x => Object.assign({}, x.orders || {}, {
-            id: x.order_id || x.id,
-            created_at: x.created_at || x.orders?.created_at,
-            city: x.orders?.city || '',
-            customer_name: x.orders?.customer_name || '',
-            vendor_email: x.vendor_email || x.orders?.vendor_email || vendorEmail,
-            assigned_delivery: x.orders?.assigned_delivery || '',
-            total_gs: Number(x.orders?.sale_total_gs || x.orders?.total_gs || 0),
-            cost_total_gs: Number(x.orders?.cost_total_gs || 0),
-            delivery_fee_gs: Number(x.orders?.delivery_fee_gs || 0),
-            commission_gs: Number(x.amount_gs || 0),
-            commission_paid: !!x.paid,
-            paid_at: x.paid_at || null,
-            status: x.order_status || x.orders?.status || 'ENTREGADO',
-            provider_emails_list: x.orders?.provider_emails_list || '',
-            items: x.orders?.order_items || x.orders?.items || []
-          })).filter(o => !providerFilter || String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
+          let visibles = rows || [];
+          if (providerFilter) {
+            visibles = visibles.filter(o => String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
+          }
+          if (onlyNormalized === 'PENDIENTE') visibles = visibles.filter(o => !o.commission_paid);
+          if (onlyNormalized === 'PAGADO') visibles = visibles.filter(o => !!o.commission_paid);
           renderCommissionsTable(visibles);
         })
         .withFailureHandler(e => toast(e.message || e))
-        .listCommissionsFlex(tok, f, t, vendorEmail, onlyNormalized, q, providerFilter);
+        .getVendorCommissions(tok, f, t, onlyNormalized, q);
     } else {
       // ADMIN/PROVEEDOR - comportamiento normal
       document.getElementById('vendor_email_box').classList.add('hidden');
@@ -6441,78 +6419,53 @@ function renderPendingGuidesSimplified() {
   // Neto a rendir calculado en Cierres (para Control de Rendición)
   window.currentRendicionMonto = 0;
 
-  function formatOrderGuideText(order){
-    const o = normalizeOrderForUI(order || {});
-    const lines = [];
-    lines.push(`Pedido: ${o.order_code || o.external_ref || o.id || ''}`);
-    lines.push(`Vendedor: ${o.vendor_email || o.created_by || ''}`);
-    lines.push(`Cliente: ${o.customer_name || ''}`);
-    lines.push(`Teléfono: ${o.phone || ''}`);
-    lines.push(`Ciudad: ${o.city || ''}`);
-    lines.push(`Calle: ${o.street || ''}`);
-    lines.push(`Barrio: ${o.district || ''}`);
-    lines.push(`Email: ${o.email || ''}`);
-    lines.push('');
-    lines.push('Items:');
-    const items = Array.isArray(o.items) ? o.items : [];
-    items.forEach(it => {
-      const price = Number(it.price_gs || it.sale_gs || 0);
-      lines.push(`- ${it.title || it.sku || ''} — Cant: ${Number(it.qty || 0)} — Precio: ${nf(price)} Gs`);
-    });
-    lines.push(`Total: ${nf(o.total_gs || 0)} Gs`);
-    return lines.join('
-');
-  }
-
-  function getOrderForGuide(orderId){
-    return (lastOrders || []).find(o => String(o.id) === String(orderId));
-  }
-
   function abrirGuiaLimpia(orderId) {
     if (!orderId) return;
-    const localOrder = getOrderForGuide(orderId);
-    if (localOrder) {
-      const textGuide = formatOrderGuideText(localOrder);
-      const blob = new Blob([textGuide], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      return;
-    }
+   
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
-    apiRun.withSuccessHandler(function(resultado) {
-      if (resultado.success && resultado.text) {
-        const blob = new Blob([resultado.text], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        window.open(url, '_blank');
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-      }
-    }).withFailureHandler(function(error) {
-      toast('Error: ' + error.message);
-    }).getGuideCleanText(tok, orderId);
+   
+    toast('📋 Generando guía...');
+   
+    apiRun
+      .withSuccessHandler(function(resultado) {
+        if (resultado.success && resultado.text) {
+          const blob = new Blob([resultado.text], {
+            type: 'text/plain;charset=utf-8'
+          });
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank');
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+        }
+      })
+      .withFailureHandler(function(error) {
+        toast('Error: ' + error.message);
+      })
+      .getGuideCleanText(tok, orderId);
   }
 
   function copiarGuiaLimpia(orderId) {
-    const localOrder = getOrderForGuide(orderId);
-    const copyText = localOrder ? formatOrderGuideText(localOrder) : null;
-    const doCopy = (txt) => navigator.clipboard.writeText(txt)
-      .then(() => toast('✅ Guía copiada'))
-      .catch(() => {
-        const textarea = document.createElement('textarea');
-        textarea.value = txt;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        toast('✅ Texto copiado ✓');
-      });
-    if (copyText) { doCopy(copyText); return; }
     const tok = localStorage.getItem(tokenKey);
     if (!tok) { toast('No estás autenticado'); return; }
-    apiRun.withSuccessHandler(function(resultado) {
-      if (resultado.success && resultado.text) doCopy(resultado.text);
-    }).withFailureHandler(error => toast('Error: ' + error.message)).getGuideCleanText(tok, orderId);
+   
+    apiRun
+      .withSuccessHandler(function(resultado) {
+        if (resultado.success && resultado.text) {
+          navigator.clipboard.writeText(resultado.text)
+            .then(() => toast('✅ Guía copiada'))
+            .catch(() => {
+              const textarea = document.createElement('textarea');
+              textarea.value = resultado.text;
+              document.body.appendChild(textarea);
+              textarea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textarea);
+              toast('✅ Texto copiado ✓');
+            });
+        }
+      })
+      .withFailureHandler(error => toast('Error: ' + error.message))
+      .getGuideCleanText(tok, orderId);
   }
 
   // =========================
@@ -6651,63 +6604,30 @@ function renderPendingGuidesSimplified() {
 
   function generateBulkTXT() {
     const allSelected = [...selectedOrders, ...selectedGuides];
-   
-    if (allSelected.length === 0) {
-      toast('Seleccioná al menos una guía');
-      return;
-    }
-   
-    if (allSelected.length > MAX_BULK_GUIDES) {
-      toast(`Máximo ${MAX_BULK_GUIDES} guías`);
-      return;
-    }
-   
+    if (allSelected.length === 0) { toast('Seleccioná al menos una guía'); return; }
+    if (allSelected.length > MAX_BULK_GUIDES) { toast(`Máximo ${MAX_BULK_GUIDES} guías`); return; }
     if (!confirm(`¿Generar TXT con ${allSelected.length} guías?`)) return;
-   
     const tok = localStorage.getItem(tokenKey);
     toast(`📄 Generando TXT...`);
-   
     const txtBtn = document.getElementById('bulkTxtBtn');
     if (txtBtn) txtBtn.disabled = true;
-   
-    const selectedTexts = allSelected.map(id => {
-      const localOrder = getOrderForGuide(id);
-      return localOrder ? formatOrderGuideText(localOrder) : null;
-    }).filter(Boolean);
-    if (selectedTexts.length === allSelected.length) {
-      const blob = new Blob([selectedTexts.join('
-
-----------------------------------------
-
-')], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `guias_${new Date().toISOString().slice(0,10)}.txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast(`✅ TXT descargado`);
-      if (txtBtn) txtBtn.disabled = false;
-      return;
-    }
-
     apiRun
       .withSuccessHandler(function(result) {
-        if (result && result.success && result.text) {
-          const blob = new Blob([result.text], { type: 'text/plain;charset=utf-8' });
+        try {
+          const text = String(result?.text || '');
+          if (!result || !result.success || !text) throw new Error('Sin contenido TXT');
+          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = result.fileName || `guias_${new Date().toISOString().slice(0,10)}.txt`;
+          a.download = `guias_${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.txt`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           setTimeout(() => URL.revokeObjectURL(url), 1000);
           toast(`✅ TXT descargado`);
-        } else {
-          toast('❌ Error al generar TXT');
+        } catch (err) {
+          toast(`❌ Error al generar TXT: ${err.message || err}`);
         }
         if (txtBtn) txtBtn.disabled = false;
       })
@@ -7083,7 +7003,7 @@ function renderPendingGuidesSimplified() {
       if (filters.providerEmail) {
         apiRun
           .withSuccessHandler(orders => {
-            lastOrders = (orders||[]).map(normalizeOrderForUI);
+            lastOrders = orders;
             renderOrdersLast();
             toast(`✅ ${orders.length} pedidos encontrados`);
           })
@@ -7092,7 +7012,7 @@ function renderPendingGuidesSimplified() {
       } else {
         apiRun
           .withSuccessHandler(orders => {
-            lastOrders = (orders||[]).map(normalizeOrderForUI);
+            lastOrders = orders;
             renderOrdersLast();
             toast('✅ Filtros aplicados');
           })
@@ -8511,7 +8431,7 @@ function renderPendingGuidesSimplified() {
     const kCntEl = document.getElementById('pc_k_cnt');
     const kSumEl = document.getElementById('pc_k_sum');
     let sum = 0;
-    (rows||[]).forEach(o=>{ sum += effectiveCommission(o); });
+    (rows||[]).forEach(o=>{ sum += Number(o.commission_gs || 0); });
     if (kCntEl) kCntEl.textContent = nf((rows||[]).length);
     if (kSumEl) kSumEl.textContent = nf(sum);
 
@@ -8530,7 +8450,7 @@ function renderPendingGuidesSimplified() {
       tr.innerHTML=`
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-        <td>${o.assigned_delivery||''}</td><td class="right">${nf(effectiveTotal(o))}</td><td class="right">${nf(effectiveCommission(o))}</td>
+        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
         <td>${stateSel}</td>
         <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
         <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
