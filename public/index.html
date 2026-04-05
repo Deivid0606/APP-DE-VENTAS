@@ -3387,7 +3387,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       scheduleAutoRefresh();
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
-      if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
+      if (me.role==='ADMIN' || me.role==='PROVEEDOR' || me.role==='DESPACHANTE'){
         apiRun.withSuccessHandler(ds=>{
           const sel = document.getElementById('cl_delivery');
           const asSel = document.getElementById('as_delivery'); // NUEVO: selector para asignación masiva
@@ -5415,6 +5415,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     if (me?.role === 'PROVEEDOR') {
       loadProviderAdSpend();
       apiRun.withSuccessHandler(res=>{
+        res = res || { cards:{orders:0,sold:0,delivered:0,canceled:0,profit:0,delivered_today_profit:0,delivered_range_profit:0}, series:[], pie:{}, top:[], map:[] };
         kpi_provider_orders.textContent = nf(res.cards.orders);
         kpi_provider_sold.textContent = nf(res.cards.sold);
         kpi_provider_delivered.textContent = nf(res.cards.delivered);
@@ -5424,30 +5425,32 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         kpi_provider_range_profit.textContent = nf(res.cards.delivered_range_profit || 0);
         updateProviderLiquidityKPI();
 
-        const series = Array.isArray(res.series) ? res.series : [];
-        const labels=series.map(s=>s.date), values=series.map(s=>s.value);
+        const __series = Array.isArray(res?.series) ? res.series : [];
+        const labels=__series.map(s=>s.date), values=__series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        const __pie = (res && typeof res.pie === 'object' && res.pie) ? res.pie : {};
+        const pl=Object.keys(__pie), pv=pl.map(k=>__pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
         });
 
         const tl=document.getElementById('topList'); tl.innerHTML='';
-        (Array.isArray(res.top)?res.top:[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
         const ml=document.getElementById('mapList'); ml.innerHTML='';
-        (Array.isArray(res.map)?res.map:[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
+        (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
 
         markUpdated();
       }).withFailureHandler(e=>toast(e.message||e)).providerMetrics(tok,f,t);
     } else {
       // Métricas normales para otros roles
       apiRun.withSuccessHandler(res=>{
+        res = res || { cards:{orders:0,sold:0,delivered:0,canceled:0,profit:0}, series:[], pie:{}, top:[], map:[] };
         kpi_orders.textContent=nf(res.cards.orders);
         kpi_sold.textContent=nf(res.cards.sold);
         kpi_delivered.textContent=nf(res.cards.delivered);
@@ -5477,15 +5480,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           kpi_profit.textContent = nf(res.cards.profit);
         }
 
-        const series = Array.isArray(res.series) ? res.series : [];
-        const labels=series.map(s=>s.date), values=series.map(s=>s.value);
+        const __series = Array.isArray(res?.series) ? res.series : [];
+        const labels=__series.map(s=>s.date), values=__series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        const __pie = (res && typeof res.pie === 'object' && res.pie) ? res.pie : {};
+        const pl=Object.keys(__pie), pv=pl.map(k=>__pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5508,9 +5512,9 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         }
 
         const tl=document.getElementById('topList'); tl.innerHTML='';
-        (Array.isArray(res.top)?res.top:[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
         const ml=document.getElementById('mapList'); ml.innerHTML='';
-        (Array.isArray(res.map)?res.map:[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
+        (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
 
         markUpdated();
       }).withFailureHandler(e=>toast(e.message||e)).metrics(tok,f,t);
@@ -6140,21 +6144,20 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
    
     apiRun
       .withSuccessHandler(result => {
+        result = result || { entregados:{count:0,revenue:0,delivery_fee:0,net:0}, encomiendas:{count:0,revenue:0}, today_assigned:0 };
         // Actualizar KPIs detallados
-        const ent = result?.entregados || {count:0,revenue:0,delivery_fee:0,net:0};
-        const enc = result?.encomiendas || {count:0,revenue:0};
-        document.getElementById('cl_k_entregados_cnt').textContent = nf(ent.count);
-        document.getElementById('cl_k_entregados_rev').textContent = nf(ent.revenue);
+        document.getElementById('cl_k_entregados_cnt').textContent = nf(result.entregados.count);
+        document.getElementById('cl_k_entregados_rev').textContent = nf(result.entregados.revenue);
        
-        document.getElementById('cl_k_encomiendas_cnt').textContent = nf(enc.count);
-        document.getElementById('cl_k_encomiendas_rev').textContent = nf(enc.revenue);
+        document.getElementById('cl_k_encomiendas_cnt').textContent = nf(result.encomiendas.count);
+        document.getElementById('cl_k_encomiendas_rev').textContent = nf(result.encomiendas.revenue);
        
-        document.getElementById('cl_k_delivery_fee').textContent = nf(ent.delivery_fee);
-        document.getElementById('cl_k_net_rendir').textContent = nf(ent.net);
-        document.getElementById('cl_k_assigned_today').textContent = nf(result?.today_assigned || 0);
+        document.getElementById('cl_k_delivery_fee').textContent = nf(result.entregados.delivery_fee);
+        document.getElementById('cl_k_net_rendir').textContent = nf(result.entregados.net);
+        document.getElementById('cl_k_assigned_today').textContent = nf(result.today_assigned);
       })
       .withFailureHandler(e => toast(e.message || e))
-      .getClosuresDetailedKPIs(tok, d, f, t);
+      .getClosuresDetailedKPIs(tok, f, t, d);
   }
 
   function loadClosures(){
@@ -6206,19 +6209,6 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
 
       // === NUEVO: Calcular pedidos asignados hoy ===
       const assignedToday = calculateAssignedToday(rows, f, t, dsel);
-
-      // Sincronizar KPIs visibles con los datos filtrados de la tabla
-      try {
-        const encomiendas = base.filter(o => String(o.status||'').toUpperCase()==='ENCOMIENDA ENTREGADA');
-        const encomiendaRevenue = encomiendas.reduce((s,o)=>s+Number(o.total_gs||o.sale_total_gs||0),0);
-        document.getElementById('cl_k_entregados_cnt').textContent = nf(cnt);
-        document.getElementById('cl_k_entregados_rev').textContent = nf(sumTotal);
-        document.getElementById('cl_k_encomiendas_cnt').textContent = nf(encomiendas.length);
-        document.getElementById('cl_k_encomiendas_rev').textContent = nf(encomiendaRevenue);
-        document.getElementById('cl_k_delivery_fee').textContent = nf(sumFee);
-        document.getElementById('cl_k_net_rendir').textContent = nf(net);
-        document.getElementById('cl_k_assigned_today').textContent = nf(assignedToday);
-      } catch(_e) {}
 
       // === NUEVO: Mostrar botón de rendición solo para ADMIN ===
       const rendicionContainer = document.getElementById('rendicionBtnContainer');
@@ -8850,6 +8840,34 @@ function renderPendingGuidesSimplified() {
       .resolveCommissionRequest(tok, id, approve, note);
   }
 
+  function addRendidoButtonsToClosures(){
+    if (me?.role === 'DELIVERY') return;
+    const rows = document.querySelectorAll('#cl_tbody tr');
+    rows.forEach(tr => {
+      const cells = tr.querySelectorAll('td');
+      if (!cells || cells.length < 10) return;
+      const id = (cells[1]?.textContent || '').trim();
+      const status1 = (cells[7]?.innerText || '').trim().toUpperCase();
+      const targetCell = cells[9];
+      if (!targetCell || !id) return;
+      if (targetCell.querySelector('.closure-rendido-btn')) return;
+      const s2Text = (targetCell.innerText || '').toUpperCase();
+      const canRendir = (status1 === 'ENTREGADO' || status1 === 'ENCOMIENDA ENTREGADA') && s2Text.indexOf('RENDIDO') < 0;
+      const btn = document.createElement('button');
+      btn.className = 'btn small closure-rendido-btn';
+      btn.style.marginTop = '8px';
+      btn.textContent = canRendir ? 'Marcar RENDIDO' : 'RENDIDO';
+      btn.disabled = !canRendir;
+      btn.onclick = function(){
+        const tok = localStorage.getItem(tokenKey);
+        apiRun
+          .withSuccessHandler(()=>{ toast('Estado cambiado a RENDIDO'); loadClosures(); })
+          .withFailureHandler(e=>toast(e.message || e))
+          .updateOrderStatus2(tok, id, 'RENDIDO');
+      };
+      targetCell.appendChild(document.createElement('div')).appendChild(btn);
+    });
+  }
 
   // Autoinicio
   (function boot(){
@@ -9064,8 +9082,8 @@ function renderPendingGuidesSimplified() {
           sel.innerHTML = options.join('');
         };
         fill('cl_delivery', 'Todos los repartidores');
-        fill('as_delivery', 'Seleccionar delivery...');
-        fill('as_delivery_ids', 'Seleccionar delivery...');
+        fill('as_delivery', 'Seleccionar delivery.');
+        fill('as_delivery_ids', 'Seleccionar delivery.');
         if (typeof updateAssignByIdsRoleState === 'function') runSafe(updateAssignByIdsRoleState);
       })
       .withFailureHandler(()=>{})
@@ -9095,6 +9113,22 @@ function renderPendingGuidesSimplified() {
     loadDeliveryUsersIntoSelectors();
   }
 
+  const _oldOpenCommissionsView = window.openCommissionsView;
+  if (typeof _oldOpenCommissionsView === 'function') {
+    window.openCommissionsView = function(){
+      const ret = _oldOpenCommissionsView.apply(this, arguments);
+      setTimeout(() => {
+        runSafe(()=>hydrateRoleDependentFilters());
+        runSafe(()=>loadVendorProviderBalances && loadVendorProviderBalances(
+          typeof getCurrentVendorForCommissionBalances === 'function' ? getCurrentVendorForCommissionBalances() : '',
+          byId('pc_from')?.value || '',
+          byId('pc_to')?.value || ''
+        ));
+      }, 150);
+      return ret;
+    };
+  }
+
   document.addEventListener('DOMContentLoaded', function(){
     let tries = 0;
     const t = setInterval(() => {
@@ -9105,12 +9139,6 @@ function renderPendingGuidesSimplified() {
       }
       if (tries > 15 || window.me) clearInterval(t);
     }, 800);
-
-    const clDelivery = byId('cl_delivery');
-    if (clDelivery && !clDelivery._wiredReload) {
-      clDelivery._wiredReload = true;
-      clDelivery.addEventListener('change', ()=>{ if (isVisibleSection('view-closures')) runSafe(()=>loadClosures()); });
-    }
 
     document.querySelectorAll('nav .btn').forEach(btn => {
       btn.addEventListener('click', () => setTimeout(() => {
