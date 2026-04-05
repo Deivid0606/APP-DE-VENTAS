@@ -429,6 +429,7 @@ async function dispatch(fn, args) {
       const provider_emails = [...new Set(totals.items.map((x) => norm(x.provider_email)).filter(Boolean))];
       const vendor_email = norm(
         order.vendor_email ||
+        (totals.items.find((x) => x.vendor_email)?.vendor_email || '') ||
         (user.role === 'VENDEDOR' ? user.email : '')
       ) || null;
 
@@ -687,35 +688,23 @@ async function dispatch(fn, args) {
     async metrics(token, fromISO = '', toISO = '') {
       const user = await requireUser(token);
       const rows = await listOrdersBase(user, fromISO, toISO, '');
-      const cards = {
-        orders: rows.length,
-        sold: rows.reduce((s, x) => s + Number(x.sale_total_gs || 0), 0),
-        delivered: rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO').length,
-        canceled: rows.filter((x) => String(x.status || '').toUpperCase() === 'CANCELADO').length
-      };
-      const byCity = groupBy(rows, (x) => x.city || 'Sin ciudad');
-      const map = Object.entries(byCity).map(([city, items]) => ({
-        city,
-        qty: items.length,
-        revenue: items.reduce((s, x) => s + Number(x.sale_total_gs || 0), 0)
-      }));
-      return { cards, map };
+      return buildDashboardPayload(rows);
     },
 
     async providerMetrics(token, fromISO = '', toISO = '') {
       const user = await requireUser(token);
       const providerEmail = user.role === 'PROVEEDOR' ? user.email : user.email;
       const rows = await listOrdersBase({ ...user, role: 'PROVEEDOR', email: providerEmail }, fromISO, toISO, '');
-      const cards = {
-        orders: rows.length,
-        sold: rows.reduce((s, x) => s + Number(x.sale_total_gs || 0), 0),
-        delivered: rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO').length,
-        canceled: rows.filter((x) => String(x.status || '').toUpperCase() === 'CANCELADO').length,
-        profit: rows.reduce((s, x) => s + Math.max(Number(x.sale_total_gs || 0) - Number(x.cost_total_gs || 0), 0), 0)
-      };
-      const byCity = groupBy(rows, (x) => x.city || 'Sin ciudad');
-      const map = Object.entries(byCity).map(([city, items]) => ({ city, qty: items.length, revenue: items.reduce((s, x) => s + Number(x.sale_total_gs || 0), 0) }));
-      return { cards, map };
+      const payload = buildDashboardPayload(rows, providerEmail);
+      payload.cards.profit = rows.reduce((s, x) => s + Math.max(Number(x.sale_total_gs || 0) - Number(x.cost_total_gs || 0), 0), 0);
+      payload.cards.delivered_today_profit = rows
+        .filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO')
+        .filter((x) => isoDay(x.updated_at || x.created_at) === isoDay(nowIso()))
+        .reduce((s, x) => s + Math.max(Number(x.sale_total_gs || 0) - Number(x.cost_total_gs || 0), 0), 0);
+      payload.cards.delivered_range_profit = rows
+        .filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO')
+        .reduce((s, x) => s + Math.max(Number(x.sale_total_gs || 0) - Number(x.cost_total_gs || 0), 0), 0);
+      return payload;
     },
 
     async getWallet(token) {
