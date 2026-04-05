@@ -9098,5 +9098,99 @@ function renderPendingGuidesSimplified() {
 </script>
 
 </div>
+
+<script>
+(function(){
+  function byId(id){ return document.getElementById(id); }
+  function isVisibleSection(id){
+    const el = byId(id);
+    return !!(el && !el.classList.contains('hidden'));
+  }
+  function runSafe(fn){
+    try { return fn && fn(); } catch(_e) {}
+  }
+  function loadDeliveryUsersIntoSelectors(){
+    const tok = localStorage.getItem(window.tokenKey || 'token');
+    if (!tok || !window.apiRun || !window.me) return;
+    if (!(me.role === 'ADMIN' || me.role === 'PROVEEDOR' || me.role === 'DESPACHANTE')) return;
+    apiRun
+      .withSuccessHandler(ds => {
+        const users = Array.isArray(ds) ? ds : [];
+        const fill = (id, emptyLabel) => {
+          const sel = byId(id);
+          if (!sel) return;
+          const options = [`<option value="">${emptyLabel}</option>`]
+            .concat(users.map(d => `<option value="${String(d.email||'').toLowerCase()}">${d.name || d.email}</option>`));
+          sel.innerHTML = options.join('');
+        };
+        fill('cl_delivery', 'Todos los repartidores');
+        fill('as_delivery', 'Seleccionar delivery.');
+        fill('as_delivery_ids', 'Seleccionar delivery.');
+        if (typeof updateAssignByIdsRoleState === 'function') runSafe(updateAssignByIdsRoleState);
+      })
+      .withFailureHandler(()=>{})
+      .listUsersByRole(tok, 'DELIVERY');
+  }
+
+  function refreshVisibleViewNow(){
+    if (!window.me) return;
+    if (isVisibleSection('view-dashboard')) runSafe(()=>refreshDashboard());
+    if (isVisibleSection('view-orders')) runSafe(()=>refreshOrders());
+    if (isVisibleSection('view-assignOrders')) runSafe(()=>loadAssignableOrders());
+    if (isVisibleSection('view-closures')) runSafe(()=>loadClosures());
+    if (isVisibleSection('view-commissions')) runSafe(()=>openCommissionsView());
+    if (isVisibleSection('view-commissionRequests')) runSafe(()=>loadCommissionRequests());
+    if (isVisibleSection('view-withGuides')) runSafe(()=>renderPendingGuidesSimplified ? renderPendingGuidesSimplified() : null);
+  }
+
+  function hydrateRoleDependentFilters(){
+    if (!window.me) return;
+    if (me.role === 'ADMIN' || me.role === 'DESPACHANTE' || me.role === 'PROVEEDOR') {
+      runSafe(()=>loadProvidersForFilters && loadProvidersForFilters());
+      runSafe(()=>loadProvidersForGuidesFilter && loadProvidersForGuidesFilter());
+      runSafe(()=>loadVendorsForCommissionsFilter && loadVendorsForCommissionsFilter());
+      runSafe(()=>loadVendorsForRequestFilters && loadVendorsForRequestFilters());
+      runSafe(()=>loadProvidersForRequestFilters && loadProvidersForRequestFilters());
+    }
+    loadDeliveryUsersIntoSelectors();
+  }
+
+  const _oldOpenCommissionsView = window.openCommissionsView;
+  if (typeof _oldOpenCommissionsView === 'function') {
+    window.openCommissionsView = function(){
+      const ret = _oldOpenCommissionsView.apply(this, arguments);
+      setTimeout(() => {
+        runSafe(()=>hydrateRoleDependentFilters());
+        runSafe(()=>loadVendorProviderBalances && loadVendorProviderBalances(
+          typeof getCurrentVendorForCommissionBalances === 'function' ? getCurrentVendorForCommissionBalances() : '',
+          byId('pc_from')?.value || '',
+          byId('pc_to')?.value || ''
+        ));
+      }, 150);
+      return ret;
+    };
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    let tries = 0;
+    const t = setInterval(() => {
+      tries += 1;
+      if (window.me && localStorage.getItem(window.tokenKey || 'token')) {
+        hydrateRoleDependentFilters();
+        refreshVisibleViewNow();
+      }
+      if (tries > 15 || window.me) clearInterval(t);
+    }, 800);
+
+    document.querySelectorAll('nav .btn').forEach(btn => {
+      btn.addEventListener('click', () => setTimeout(() => {
+        hydrateRoleDependentFilters();
+        refreshVisibleViewNow();
+      }, 200));
+    });
+  });
+})();
+</script>
+
 </body>
 </html>
