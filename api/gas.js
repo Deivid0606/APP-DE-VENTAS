@@ -606,7 +606,14 @@ async function dispatch(fn, args) {
       const user = await requireUser(token);
       if (typeof fromISO === 'object' && fromISO) {
         const filters = fromISO;
-        return listOrdersBase({ ...user, role: 'PROVEEDOR' }, filters.fromISO || '', filters.toISO || '', filters.q || '', filters.onlyStatus || '', filters.onlyDelivery || '', filters.onlyProvider || '');
+        let rows = await listOrdersBase({ ...user, role: 'PROVEEDOR' }, filters.fromISO || '', filters.toISO || '', filters.q || '', filters.onlyStatus || '', filters.onlyDelivery || '', filters.onlyProvider || filters.providerEmail || '');
+        const tipo = String(filters.tipo || '').trim().toUpperCase();
+        const status2 = String(filters.status || '').trim().toUpperCase();
+        if (tipo === 'PENDIENTES') rows = rows.filter((x) => ['GUIA PENDIENTE', '', '--'].includes(String(x.status2 || '').trim().toUpperCase()));
+        else if (tipo === 'GENERADAS') rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'GUIA GENERADA');
+        else if (tipo === 'RENDIDAS') rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'RENDIDO');
+        if (status2) rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === status2);
+        return rows;
       }
       return listOrdersBase({ ...user, role: 'PROVEEDOR' }, fromISO, toISO, q);
     },
@@ -615,7 +622,14 @@ async function dispatch(fn, args) {
       const user = await requireUser(token);
       if (typeof fromISO === 'object' && fromISO) {
         const filters = fromISO;
-        return listOrdersBase({ ...user, role: 'DESPACHANTE' }, filters.fromISO || '', filters.toISO || '', filters.q || '', filters.onlyStatus || '', filters.onlyDelivery || '', filters.onlyProvider || '');
+        let rows = await listOrdersBase({ ...user, role: 'DESPACHANTE' }, filters.fromISO || '', filters.toISO || '', filters.q || '', filters.onlyStatus || '', filters.onlyDelivery || '', filters.onlyProvider || filters.providerEmail || '');
+        const tipo = String(filters.tipo || '').trim().toUpperCase();
+        const status2 = String(filters.status || '').trim().toUpperCase();
+        if (tipo === 'PENDIENTES') rows = rows.filter((x) => ['GUIA PENDIENTE', '', '--'].includes(String(x.status2 || '').trim().toUpperCase()));
+        else if (tipo === 'GENERADAS') rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'GUIA GENERADA');
+        else if (tipo === 'RENDIDAS') rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'RENDIDO');
+        if (status2) rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === status2);
+        return rows;
       }
       return listOrdersBase({ ...user, role: 'DESPACHANTE' }, fromISO, toISO, q);
     },
@@ -691,7 +705,11 @@ async function dispatch(fn, args) {
 
     async updateOrderStatus2(token, orderId, status2) {
       const user = await requireUser(token);
-      const { data, error } = await supabase.from('orders').update({ status2, updated_at: nowIso() }).eq('id', orderId).select('*').single();
+      const nextStatus2 = String(status2 || '').trim().toUpperCase();
+      if (user.role === 'DELIVERY' && nextStatus2 === 'RENDIDO') {
+        throw new Error('El delivery no puede marcar RENDIDO');
+      }
+      const { data, error } = await supabase.from('orders').update({ status2: status2, updated_at: nowIso() }).eq('id', orderId).select('*').single();
       if (error) throw error;
       await logNews('ORDER_STATUS2', `Pedido #${orderId} → ${status2}`, orderId, user.email);
       return data;
@@ -913,11 +931,12 @@ async function dispatch(fn, args) {
       return data;
     },
 
-    async getVendorCommissions(token, fromISO = '', toISO = '', only = '', q = '') {
+    async getVendorCommissions(token, fromISO = '', toISO = '', only = '', q = '', providerFilter = '', vendorEmail = '') {
       const user = await requireUser(token);
       let query = supabase.from('vendor_commissions').select('*, orders(*)').order('created_at', { ascending: false });
-      const vendorEmail = user.role === 'VENDEDOR' ? user.email : norm(arguments[4] || '');
-      if (vendorEmail) query = query.eq('vendor_email', vendorEmail);
+      const finalVendor = user.role === 'VENDEDOR' ? norm(user.email) : norm(vendorEmail || '');
+      if (finalVendor) query = query.eq('vendor_email', finalVendor);
+      if (providerFilter) query = query.eq('provider_email', norm(providerFilter));
       query = applyRange(query, fromISO, toISO);
       if (only === 'PAGADO') query = query.eq('paid', true);
       if (only === 'PENDIENTE') query = query.eq('paid', false);
