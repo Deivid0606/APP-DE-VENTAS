@@ -38,145 +38,6 @@ function normalizeVendorBalanceArgs(vendorEmail, fromISO = '', toISO = '', extra
   };
 }
 
-function isoDay(value) {
-  const d = value ? new Date(value) : null;
-  return d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '';
-}
-
-function buildDashboardPayload(rows, providerEmail = '') {
-  const list = Array.isArray(rows) ? rows : [];
-  const cards = {
-    orders: list.length,
-    sold: list.reduce((s, x) => s + Number(x.sale_total_gs || x.total_gs || 0), 0),
-    delivered: list.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO').length,
-    canceled: list.filter((x) => String(x.status || '').toUpperCase() === 'CANCELADO').length,
-    profit: list.reduce((s, x) => s + Math.max(Number(x.sale_total_gs || x.total_gs || 0) - Number(x.cost_total_gs || 0) - Number(x.delivery_fee_gs || 0), 0), 0)
-  };
-  const seriesMap = {};
-  const pie = {};
-  const cityMap = {};
-  const productMap = {};
-  const guidesSeries = {};
-  let guidesGenerated = 0;
-  let guidesPending = 0;
-
-  list.forEach((row) => {
-    const day = isoDay(row.created_at || row.updated_at || nowIso()) || 'Sin fecha';
-    const sold = Number(row.sale_total_gs || row.total_gs || 0);
-    seriesMap[day] = (seriesMap[day] || 0) + sold;
-    const st = String(row.status || 'SIN ESTADO').toUpperCase();
-    pie[st] = (pie[st] || 0) + 1;
-    const city = String(row.city || 'Sin ciudad');
-    cityMap[city] = cityMap[city] || { city, qty: 0, revenue: 0 };
-    cityMap[city].qty += 1;
-    cityMap[city].revenue += sold;
-    const guideDay = isoDay(row.assigned_at || row.created_at || row.updated_at || nowIso()) || day;
-    guidesSeries[guideDay] = guidesSeries[guideDay] || { date: guideDay, gen: 0, pend: 0 };
-    const status2 = String(row.status2 || '').toUpperCase();
-    if (status2 === 'GUIA GENERADA' || status2 === 'RENDIDO') {
-      guidesGenerated += 1;
-      guidesSeries[guideDay].gen += 1;
-    } else {
-      guidesPending += 1;
-      guidesSeries[guideDay].pend += 1;
-    }
-    const items = Array.isArray(row.items) ? row.items : [];
-    items.forEach((item) => {
-      if (providerEmail && String(item.provider_email || '').toLowerCase() !== String(providerEmail || '').toLowerCase()) return;
-      const key = String(item.title || item.sku || 'Producto');
-      productMap[key] = productMap[key] || { name: key, qty: 0, revenue: 0 };
-      const qty = Number(item.qty || 0);
-      productMap[key].qty += qty;
-      productMap[key].revenue += qty * Number(item.price_gs || 0);
-    });
-  });
-
-  return {
-    cards,
-    series: Object.entries(seriesMap).sort((a, b) => a[0].localeCompare(b[0])).map(([date, value]) => ({ date, value })),
-    pie,
-    top: Object.values(productMap).sort((a, b) => b.qty - a.qty || b.revenue - a.revenue).slice(0, 10),
-    map: Object.values(cityMap).sort((a, b) => b.qty - a.qty || b.revenue - a.revenue),
-    guides: {
-      generated: guidesGenerated,
-      pending: guidesPending,
-      series: Object.values(guidesSeries).sort((a, b) => a.date.localeCompare(b.date))
-    }
-  };
-}
-
-function flattenCommissionRows(rows) {
-  return (rows || []).map((row) => {
-    const order = row.orders || row.order || {};
-    const total_gs = Number(order.total_gs ?? order.sale_total_gs ?? 0);
-    const cost_total_gs = Number(order.cost_total_gs || 0);
-    const delivery_fee_gs = Number(order.delivery_fee_gs || 0);
-    const commission_gs = Number(row.amount_gs || Math.max(total_gs - cost_total_gs - delivery_fee_gs, 0));
-    return {
-      ...row,
-      id: order.id || row.order_id,
-      order_id: row.order_id,
-      created_at: row.created_at || order.created_at || nowIso(),
-      customer_name: order.customer_name || '',
-      city: order.city || '',
-      vendor_email: row.vendor_email || order.vendor_email || '',
-      provider_email: row.provider_email || order.provider_email || '',
-      provider_emails_list: order.provider_emails_list || '',
-      assigned_delivery: order.assigned_delivery || '',
-      status: order.status || row.order_status || '',
-      status2: order.status2 || '',
-      sale_total_gs: Number(order.sale_total_gs || total_gs),
-      total_gs,
-      cost_total_gs,
-      delivery_fee_gs,
-      commission_gs,
-      commission_paid: !!row.paid,
-      paid_at: row.paid_at || null,
-      items: Array.isArray(order.order_items) ? order.order_items : (Array.isArray(order.items) ? order.items : [])
-    };
-  });
-}
-
-function normalizeGuideFiltersArg(fromISO = '', toISO = '', q = '') {
-  if (fromISO && typeof fromISO === 'object' && !Array.isArray(fromISO)) {
-    return {
-      fromISO: String(fromISO.fromISO || '').trim(),
-      toISO: String(fromISO.toISO || '').trim(),
-      q: String(fromISO.q || '').trim(),
-      providerEmail: norm(fromISO.providerEmail || ''),
-      tipo: String(fromISO.tipo || '').trim().toUpperCase(),
-      status: String(fromISO.status || '').trim().toUpperCase()
-    };
-  }
-  return {
-    fromISO: String(fromISO || '').trim(),
-    toISO: String(toISO || '').trim(),
-    q: String(q || '').trim(),
-    providerEmail: '',
-    tipo: '',
-    status: ''
-  };
-}
-
-function normalizeClosureArgs(deliveryEmail = '', fromISO = '', toISO = '', extra = '') {
-  let delivery = String(deliveryEmail || '').trim();
-  let from = String(fromISO || '').trim();
-  let to = String(toISO || '').trim();
-  const extraArg = String(extra || '').trim();
-  if (looksLikeISODate(delivery) && looksLikeISODate(from)) {
-    const originalDelivery = delivery;
-    delivery = extraArg;
-    to = from;
-    from = originalDelivery;
-  }
-  return {
-    deliveryEmail: norm(delivery),
-    fromISO: from,
-    toISO: to
-  };
-}
-
-
 async function getClientCityPriceByCity(city) {
   const cleanCity = String(city || '').trim();
   if (!cleanCity) return 0;
@@ -193,6 +54,83 @@ function getGuideOrderCode(order) {
   if (explicitCode) return explicitCode;
   const rawId = String(order.id || '').trim();
   return rawId ? `A${rawId}` : '';
+}
+
+
+function isoDay(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+function toOrderSummary(comm) {
+  const o = comm?.orders || {};
+  const total_gs = Number(o.total_gs ?? o.sale_total_gs ?? 0);
+  const cost_total_gs = Number(o.cost_total_gs || 0);
+  const delivery_fee_gs = Number(o.delivery_fee_gs || 0);
+  return {
+    id: Number(comm.order_id || o.id || 0),
+    order_id: Number(comm.order_id || o.id || 0),
+    created_at: comm.created_at || o.created_at || nowIso(),
+    customer_name: o.customer_name || '',
+    city: o.city || '',
+    vendor_email: comm.vendor_email || o.vendor_email || '',
+    provider_email: comm.provider_email || o.provider_email || '',
+    provider_emails_list: o.provider_emails_list || '',
+    assigned_delivery: o.assigned_delivery || '',
+    status: o.status || comm.order_status || '',
+    status2: o.status2 || '',
+    total_gs,
+    sale_total_gs: total_gs,
+    cost_total_gs,
+    delivery_fee_gs,
+    commission_gs: Number(comm.amount_gs || Math.max(total_gs - cost_total_gs - delivery_fee_gs, 0)),
+    commission_paid: !!comm.paid,
+    paid_at: comm.paid_at || null,
+    order_code: getGuideOrderCode(o || {})
+  };
+}
+
+function buildDashboardPayload(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const cards = {
+    orders: safeRows.length,
+    sold: safeRows.reduce((s, x) => s + Number(x.sale_total_gs || x.total_gs || 0), 0),
+    delivered: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO').length,
+    canceled: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'CANCELADO').length
+  };
+  const byDay = {};
+  for (const row of safeRows) {
+    const key = isoDay(row.created_at || row.updated_at || nowIso());
+    byDay[key] = (byDay[key] || 0) + Number(row.sale_total_gs || row.total_gs || 0);
+  }
+  const series = Object.keys(byDay).sort().map((date) => ({ date, value: byDay[date] }));
+  const pie = {
+    ENTREGADO: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO').length,
+    PENDIENTE: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'PENDIENTE').length,
+    CANCELADO: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'CANCELADO').length
+  };
+  const productMap = {};
+  safeRows.forEach((row) => {
+    (row.items || row.order_items || []).forEach((item) => {
+      const key = item.title || item.sku || 'Sin título';
+      if (!productMap[key]) productMap[key] = { name: key, qty: 0, revenue: 0 };
+      const qty = Number(item.qty || 0);
+      productMap[key].qty += qty;
+      productMap[key].revenue += qty * Number(item.price_gs || 0);
+    });
+  });
+  const top = Object.values(productMap).sort((a, b) => b.qty - a.qty || b.revenue - a.revenue).slice(0, 10);
+  const mapByCity = {};
+  safeRows.forEach((row) => {
+    const key = row.city || 'Sin ciudad';
+    if (!mapByCity[key]) mapByCity[key] = { city: key, qty: 0, revenue: 0 };
+    mapByCity[key].qty += 1;
+    mapByCity[key].revenue += Number(row.sale_total_gs || row.total_gs || 0);
+  });
+  const map = Object.values(mapByCity).sort((a, b) => b.qty - a.qty || b.revenue - a.revenue);
+  return { cards, series, pie, top, map };
 }
 
 function sanitizeUser(user) {
@@ -664,29 +602,23 @@ async function dispatch(fn, args) {
       return listOrdersBase(user, fromISO, toISO, q);
     },
 
-    
-async listProviderOrders(token, fromISO, toISO, q) {
-  const user = await requireUser(token);
-  const filters = normalizeGuideFiltersArg(fromISO, toISO, q);
-  let rows = await listOrdersBase({ ...user, role: 'PROVEEDOR' }, filters.fromISO, filters.toISO, filters.q);
-  if (filters.providerEmail) rows = rows.filter((x) => String(x.provider_email || '').toLowerCase() === filters.providerEmail || String(x.provider_emails_list || '').toLowerCase().includes(filters.providerEmail));
-  if (filters.status) rows = rows.filter((x) => String(x.status || '').toUpperCase() === filters.status);
-  if (filters.tipo === 'PENDIENTES') rows = rows.filter((x) => !['GUIA GENERADA','RENDIDO'].includes(String(x.status2 || '').toUpperCase()));
-  if (filters.tipo === 'GENERADAS') rows = rows.filter((x) => ['GUIA GENERADA','RENDIDO'].includes(String(x.status2 || '').toUpperCase()));
-  return rows;
-},
+    async listProviderOrders(token, fromISO = '', toISO = '', q = '') {
+      const user = await requireUser(token);
+      if (typeof fromISO === 'object' && fromISO) {
+        const filters = fromISO;
+        return listOrdersBase({ ...user, role: 'PROVEEDOR' }, filters.fromISO || '', filters.toISO || '', filters.q || '', filters.onlyStatus || '', filters.onlyDelivery || '', filters.onlyProvider || '');
+      }
+      return listOrdersBase({ ...user, role: 'PROVEEDOR' }, fromISO, toISO, q);
+    },
 
-    
-async listDespachanteOrders(token, fromISO, toISO, q) {
-  const user = await requireUser(token);
-  const filters = normalizeGuideFiltersArg(fromISO, toISO, q);
-  let rows = await listOrdersBase({ ...user, role: 'DESPACHANTE' }, filters.fromISO, filters.toISO, filters.q);
-  if (filters.providerEmail) rows = rows.filter((x) => String(x.provider_email || '').toLowerCase() === filters.providerEmail || String(x.provider_emails_list || '').toLowerCase().includes(filters.providerEmail));
-  if (filters.status) rows = rows.filter((x) => String(x.status || '').toUpperCase() === filters.status);
-  if (filters.tipo === 'PENDIENTES') rows = rows.filter((x) => !['GUIA GENERADA','RENDIDO'].includes(String(x.status2 || '').toUpperCase()));
-  if (filters.tipo === 'GENERADAS') rows = rows.filter((x) => ['GUIA GENERADA','RENDIDO'].includes(String(x.status2 || '').toUpperCase()));
-  return rows;
-},
+    async listDespachanteOrders(token, fromISO = '', toISO = '', q = '') {
+      const user = await requireUser(token);
+      if (typeof fromISO === 'object' && fromISO) {
+        const filters = fromISO;
+        return listOrdersBase({ ...user, role: 'DESPACHANTE' }, filters.fromISO || '', filters.toISO || '', filters.q || '', filters.onlyStatus || '', filters.onlyDelivery || '', filters.onlyProvider || '');
+      }
+      return listOrdersBase({ ...user, role: 'DESPACHANTE' }, fromISO, toISO, q);
+    },
 
     async listOrdersForAssignment(token, fromISO, toISO, q) {
       const user = await requireUser(token);
@@ -954,21 +886,24 @@ async listDespachanteOrders(token, fromISO, toISO, q) {
     },
 
     
-async listCommissionsFlex(token, fromISO = '', toISO = '', vendorEmail = '', only = '', q = '', providerFilter = '') {
-  const user = await requireUser(token);
-  const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, '');
-  let query = supabase.from('vendor_commissions').select('*, orders(*)').order('created_at', { ascending: false });
-  query = applyRange(query, normalized.fromISO, normalized.toISO);
-  if (user.role === 'VENDEDOR') query = query.eq('vendor_email', user.email);
-  else if (normalized.vendorEmail) query = query.eq('vendor_email', normalized.vendorEmail);
-  if (providerFilter) query = query.eq('provider_email', norm(providerFilter));
-  if (only === 'PAGADO') query = query.eq('paid', true);
-  if (only === 'PENDIENTE') query = query.eq('paid', false);
-  const { data, error } = await query;
-  if (error) throw error;
-  const rows = flattenCommissionRows(data || []);
-  return rows.filter((x) => !q || JSON.stringify(x).toLowerCase().includes(String(q).toLowerCase()));
-},
+    async listCommissionsFlex(token, fromISO = '', toISO = '', vendorEmail = '', only = '', q = '', providerFilter = '') {
+      const user = await requireUser(token);
+      let query = supabase.from('vendor_commissions').select('*, orders(*)').order('created_at', { ascending: false });
+      query = applyRange(query, fromISO, toISO);
+      if (user.role === 'VENDEDOR') query = query.eq('vendor_email', user.email);
+      if (vendorEmail) query = query.eq('vendor_email', norm(vendorEmail));
+      if (providerFilter) query = query.eq('provider_email', norm(providerFilter));
+      if (only === 'PAGADO') query = query.eq('paid', true);
+      if (only === 'PENDIENTE') query = query.eq('paid', false);
+      const { data, error } = await query;
+      if (error) throw error;
+      let rows = (data || []).map(toOrderSummary);
+      if (q) {
+        const qq = String(q).toLowerCase();
+        rows = rows.filter((x) => JSON.stringify(x).toLowerCase().includes(qq));
+      }
+      return rows;
+    },
 
     async payVendorCommission(token, orderId, paid) {
       const user = await requireUser(token);
@@ -978,147 +913,181 @@ async listCommissionsFlex(token, fromISO = '', toISO = '', vendorEmail = '', onl
       return data;
     },
 
-    
-async getVendorCommissions(token, vendorEmail = '', fromISO = '', toISO = '', only = '', q = '', providerFilter = '') {
-  const user = await requireUser(token);
-  const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[6]);
-  const finalVendorEmail = user.role === 'VENDEDOR' ? norm(user.email) : normalized.vendorEmail;
-  return handlers.listCommissionsFlex(token, normalized.fromISO, normalized.toISO, finalVendorEmail, only, q, providerFilter || '');
-},
+    async getVendorCommissions(token, fromISO = '', toISO = '', only = '', q = '') {
+      const user = await requireUser(token);
+      let query = supabase.from('vendor_commissions').select('*, orders(*)').order('created_at', { ascending: false });
+      const vendorEmail = user.role === 'VENDEDOR' ? user.email : norm(arguments[4] || '');
+      if (vendorEmail) query = query.eq('vendor_email', vendorEmail);
+      query = applyRange(query, fromISO, toISO);
+      if (only === 'PAGADO') query = query.eq('paid', true);
+      if (only === 'PENDIENTE') query = query.eq('paid', false);
+      const { data, error } = await query;
+      if (error) throw error;
+      let rows = (data || []).map(toOrderSummary);
+      if (q) {
+        const qq = String(q).toLowerCase();
+        rows = rows.filter((x) => JSON.stringify(x).toLowerCase().includes(qq));
+      }
+      return rows;
+    },
 
     
-async getVendorProviderBalances(token, vendorEmail, fromISO = '', toISO = '') {
-  const user = await requireUser(token);
-  const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[4]);
-  const finalVendorEmail = user.role === 'VENDEDOR' ? norm(user.email) : normalized.vendorEmail;
-  let query = supabase.from('vendor_commissions').select('*, orders(*)');
-  if (finalVendorEmail) query = query.eq('vendor_email', finalVendorEmail);
-  query = applyRange(query, normalized.fromISO, normalized.toISO);
-  const { data, error } = await query;
-  if (error) throw error;
-  const rows = flattenCommissionRows(data || []);
-  const grouped = groupBy(rows, (x) => `${String(x.provider_email || 'sin-proveedor').toLowerCase()}||${String(x.vendor_email || '').toLowerCase()}`);
-  return Object.values(grouped).map((groupRows) => {
-    const sample = groupRows[0] || {};
-    const gross = groupRows.reduce((s, x) => s + Number(x.commission_gs || 0), 0);
-    const paid = groupRows.filter((x) => x.commission_paid).reduce((s, x) => s + Number(x.commission_gs || 0), 0);
-    const pending = groupRows.filter((x) => !x.commission_paid).reduce((s, x) => s + Number(x.commission_gs || 0), 0);
-    return {
-      provider_email: sample.provider_email || 'sin-proveedor',
-      vendor_email: sample.vendor_email || finalVendorEmail || '',
-      total_gs: gross,
-      pending_gs: pending,
-      paid_gs: paid,
-      gross_commission_gs: gross,
-      available_gs: pending,
-      orders_count: groupRows.length
-    };
-  }).sort((a, b) => a.provider_email.localeCompare(b.provider_email));
-},
+    async getVendorProviderBalances(token, vendorEmail, fromISO = '', toISO = '') {
+      const user = await requireUser(token);
+      const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[4]);
+      let finalVendorEmail = normalized.vendorEmail;
+      if (user.role === 'VENDEDOR') finalVendorEmail = norm(user.email);
+      let query = supabase.from('vendor_commissions').select('*');
+      if (finalVendorEmail) query = query.eq('vendor_email', finalVendorEmail);
+      query = applyRange(query, normalized.fromISO, normalized.toISO);
+      const { data, error } = await query;
+      if (error) throw error;
+      const grouped = groupBy(data || [], (x) => x.provider_email || 'sin-proveedor');
+      return Object.entries(grouped).map(([provider_email, rows]) => {
+        const gross = rows.reduce((s, x) => s + Number(x.amount_gs || 0), 0);
+        const paid = rows.filter((x) => !!x.paid).reduce((s, x) => s + Number(x.amount_gs || 0), 0);
+        const pending = Math.max(gross - paid, 0);
+        return {
+          provider_email,
+          vendor_email: finalVendorEmail,
+          total_gs: gross,
+          gross_commission_gs: gross,
+          pending_gs: pending,
+          paid_gs: paid,
+          available_gs: pending,
+          orders_count: rows.length
+        };
+      });
+    },
 
+    
     async createCommissionRequest(token, payload) {
       const user = await requireUser(token);
       requireRole(user, 'VENDEDOR');
-      const row = {
-        vendor_email: user.email,
-        provider_email: norm(payload.provider_email || ''),
-        amount_gs: Number(payload.amount_gs || 0),
-        note: payload.note || '',
-        status: 'PENDIENTE'
-      };
+      let provider_email = '';
+      let amount_gs = 0;
+      let note = '';
+      let fromISO = '';
+      let toISO = '';
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        provider_email = norm(payload.provider_email || '');
+        amount_gs = Number(payload.amount_gs || 0);
+        note = payload.note || '';
+        fromISO = payload.fromISO || '';
+        toISO = payload.toISO || '';
+      } else {
+        provider_email = norm(arguments[1] || '');
+        amount_gs = Number(arguments[2] || 0);
+        note = String(arguments[3] || '');
+        fromISO = String(arguments[4] || '');
+        toISO = String(arguments[5] || '');
+      }
+      const balances = await handlers.getVendorProviderRequestBalances(token, user.email, fromISO, toISO);
+      const rowBalance = (balances || []).find((x) => norm(x.provider_email) === provider_email);
+      if (!provider_email && rowBalance) provider_email = rowBalance.provider_email;
+      if (!amount_gs && rowBalance) amount_gs = Number(rowBalance.available_gs || 0);
+      if (!provider_email) throw new Error('Proveedor obligatorio');
+      if (!(amount_gs > 0)) throw new Error('No hay saldo disponible para solicitar');
+      const row = { vendor_email: user.email, provider_email, amount_gs, note, status: 'PENDIENTE' };
       const { data, error } = await supabase.from('commission_requests').insert(row).select('*').single();
       if (error) throw error;
-      return data;
+      return { ...data, message: 'Solicitud registrada', retained_gs: amount_gs };
     },
 
-    async listCommissionRequests(token) {
+    async listCommissionRequests(token, status = '', vendor = '', provider = '') {
       const user = await requireUser(token);
       let query = supabase.from('commission_requests').select('*').order('created_at', { ascending: false });
       if (user.role === 'VENDEDOR') query = query.eq('vendor_email', user.email);
+      if (status) query = query.eq('status', status);
+      if (vendor && user.role !== 'VENDEDOR') query = query.eq('vendor_email', norm(vendor));
+      if (provider) query = query.eq('provider_email', norm(provider));
       const { data, error } = await query;
       if (error) throw error;
-      return data || [];
+      return (data || []).map((r) => ({ ...r, requested_at: r.created_at }));
     },
 
+    
     async resolveCommissionRequest(token, requestId, status, note = '') {
       const user = await requireUser(token);
       requireRole(user, ['ADMIN', 'PROVEEDOR']);
-      const { data, error } = await supabase.from('commission_requests').update({ status, resolved_at: nowIso(), resolution_note: note }).eq('id', requestId).select('*').single();
+      const finalStatus = typeof status === 'boolean' ? (status ? 'APROBADO' : 'RECHAZADO') : String(status || '').toUpperCase();
+      const { data, error } = await supabase.from('commission_requests').update({ status: finalStatus, resolved_at: nowIso(), resolution_note: note || '' }).eq('id', requestId).select('*').single();
       if (error) throw error;
-      return data;
+      return { ...data, updated_orders_count: 0, skipped_order_ids: [] };
     },
 
     
-async getVendorProviderRequestBalances(token, vendorEmail = '', fromISO = '', toISO = '') {
-  const user = await requireUser(token);
-  const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[4]);
-  const finalVendorEmail = user.role === 'VENDEDOR' ? norm(user.email) : normalized.vendorEmail;
-  let cq = supabase.from('vendor_commissions').select('*, orders(*)');
-  if (finalVendorEmail) cq = cq.eq('vendor_email', finalVendorEmail);
-  cq = applyRange(cq, normalized.fromISO, normalized.toISO);
-  const { data: commissions, error: cErr } = await cq;
-  if (cErr) throw cErr;
-  const commissionRows = flattenCommissionRows(commissions || []);
-  let rq = supabase.from('commission_requests').select('*');
-  if (finalVendorEmail) rq = rq.eq('vendor_email', finalVendorEmail);
-  rq = applyRange(rq, normalized.fromISO, normalized.toISO);
-  const { data: requests, error } = await rq;
-  if (error) throw error;
-  const groupedOrders = groupBy(commissionRows, (x) => `${String(x.provider_email || 'sin-proveedor').toLowerCase()}||${String(x.vendor_email || '').toLowerCase()}`);
-  const groupedReq = groupBy(requests || [], (x) => `${String(x.provider_email || 'sin-proveedor').toLowerCase()}||${String(x.vendor_email || finalVendorEmail || '').toLowerCase()}`);
-  const keys = new Set([...Object.keys(groupedOrders), ...Object.keys(groupedReq)]);
-  return Array.from(keys).map((key) => {
-    const orderRows = groupedOrders[key] || [];
-    const reqRows = groupedReq[key] || [];
-    const sample = orderRows[0] || reqRows[0] || {};
-    const gross = orderRows.reduce((s, x) => s + Number(x.commission_gs || 0), 0);
-    const manualPaid = orderRows.filter((x) => x.commission_paid).reduce((s, x) => s + Number(x.commission_gs || 0), 0);
-    const requestedPending = reqRows.filter((x) => String(x.status || '').toUpperCase() === 'PENDIENTE').reduce((s, x) => s + Number(x.amount_gs || 0), 0);
-    const requestedApproved = reqRows.filter((x) => String(x.status || '').toUpperCase() === 'APROBADO').reduce((s, x) => s + Number(x.amount_gs || 0), 0);
-    const requestedRejected = reqRows.filter((x) => String(x.status || '').toUpperCase() === 'RECHAZADO').reduce((s, x) => s + Number(x.amount_gs || 0), 0);
-    const available = Math.max(gross - manualPaid - requestedPending - requestedApproved, 0);
-    const rendidos = orderRows.filter((x) => String(x.status2 || '').toUpperCase() === 'RENDIDO' && !x.commission_paid).length;
-    return {
-      provider_email: sample.provider_email || 'sin-proveedor',
-      vendor_email: sample.vendor_email || finalVendorEmail || '',
-      pending_gs: requestedPending,
-      approved_gs: requestedApproved,
-      rejected_gs: requestedRejected,
-      requested_pending_gs: requestedPending,
-      requested_approved_gs: requestedApproved,
-      manual_paid_gs: manualPaid,
-      gross_commission_gs: gross,
-      available_gs: available,
-      orders_count: orderRows.length,
-      request_orders_count: rendidos
-    };
-  }).sort((a, b) => a.provider_email.localeCompare(b.provider_email));
-},
+    async getVendorProviderRequestBalances(token, vendorEmail = '', fromISO = '', toISO = '') {
+      const user = await requireUser(token);
+      const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[4]);
+      let finalVendorEmail = normalized.vendorEmail;
+      if (user.role === 'VENDEDOR') finalVendorEmail = norm(user.email);
+
+      let reqQuery = supabase.from('commission_requests').select('*');
+      if (finalVendorEmail) reqQuery = reqQuery.eq('vendor_email', finalVendorEmail);
+      reqQuery = applyRange(reqQuery, normalized.fromISO, normalized.toISO);
+      const { data: reqRows, error: reqError } = await reqQuery;
+      if (reqError) throw reqError;
+
+      let commQuery = supabase.from('vendor_commissions').select('*').eq('paid', false);
+      if (finalVendorEmail) commQuery = commQuery.eq('vendor_email', finalVendorEmail);
+      commQuery = applyRange(commQuery, normalized.fromISO, normalized.toISO);
+      const { data: commRows, error: commError } = await commQuery;
+      if (commError) throw commError;
+
+      const providers = new Set([...(reqRows || []).map((x) => x.provider_email || 'sin-proveedor'), ...(commRows || []).map((x) => x.provider_email || 'sin-proveedor')]);
+      return Array.from(providers).map((provider_email) => {
+        const relatedReq = (reqRows || []).filter((x) => (x.provider_email || 'sin-proveedor') === provider_email);
+        const relatedComm = (commRows || []).filter((x) => (x.provider_email || 'sin-proveedor') === provider_email);
+        const gross = relatedComm.reduce((s, x) => s + Number(x.amount_gs || 0), 0);
+        const requested_pending = relatedReq.filter((x) => x.status === 'PENDIENTE').reduce((s, x) => s + Number(x.amount_gs || 0), 0);
+        const requested_approved = relatedReq.filter((x) => x.status === 'APROBADO').reduce((s, x) => s + Number(x.amount_gs || 0), 0);
+        const requested_rejected = relatedReq.filter((x) => x.status === 'RECHAZADO').reduce((s, x) => s + Number(x.amount_gs || 0), 0);
+        const available = Math.max(gross - requested_pending - requested_approved, 0);
+        return {
+          provider_email,
+          vendor_email: finalVendorEmail,
+          gross_commission_gs: gross,
+          requested_pending_gs: requested_pending,
+          requested_approved_gs: requested_approved,
+          rejected_gs: requested_rejected,
+          manual_paid_gs: 0,
+          available_gs: available,
+          orders_count: relatedComm.length,
+          pending_gs: requested_pending,
+          approved_gs: requested_approved
+        };
+      });
+    },
 
     
-async getClosuresDetailedKPIs(token, deliveryEmail = '', fromISO = '', toISO = '') {
-  const user = await requireUser(token);
-  const normalized = normalizeClosureArgs(deliveryEmail, fromISO, toISO, arguments[4]);
-  let finalDelivery = normalized.deliveryEmail;
-  if (user.role === 'DELIVERY') finalDelivery = norm(user.email);
-  let rows = await listOrdersBase(user, normalized.fromISO, normalized.toISO, '', '', finalDelivery);
-  if (finalDelivery) rows = rows.filter((x) => String(x.assigned_delivery || '').toLowerCase() === finalDelivery);
-  const delivered = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO');
-  const encomiendas = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENCOMIENDA ENTREGADA');
-  const deliveredRevenue = delivered.reduce((s, x) => s + Number(x.total_gs || x.sale_total_gs || 0), 0);
-  const encomRevenue = encomiendas.reduce((s, x) => s + Number(x.total_gs || x.sale_total_gs || 0), 0);
-  const deliveredFee = delivered.reduce((s, x) => s + Number(x.delivery_fee_gs || 0), 0);
-  const todayAssigned = rows.filter((x) => isoDay(x.assigned_at || x.created_at) === isoDay(nowIso())).length;
-  return {
-    entregados: { count: delivered.length, revenue: deliveredRevenue, delivery_fee: deliveredFee, net: deliveredRevenue - deliveredFee },
-    encomiendas: { count: encomiendas.length, revenue: encomRevenue },
-    today_assigned: todayAssigned,
-    total: rows.length,
-    pending: rows.filter((x) => !['ENTREGADO', 'CANCELADO'].includes(String(x.status || '').toUpperCase())).length,
-    rendidos: rows.filter((x) => String(x.status2 || '').toUpperCase() === 'RENDIDO').length,
-    rows
-  };
-},
+    async getClosuresDetailedKPIs(token, deliveryEmail = '', fromISO = '', toISO = '') {
+      const user = await requireUser(token);
+      let delivery = String(deliveryEmail || '').trim().toLowerCase();
+      let from = String(fromISO || '').trim();
+      let to = String(toISO || '').trim();
+      if (looksLikeISODate(delivery) && looksLikeISODate(from) && to && to.includes('@')) {
+        const tmp = to;
+        to = from;
+        from = delivery;
+        delivery = tmp;
+      }
+      if (user.role === 'DELIVERY') delivery = user.email;
+      let rows = await listOrdersBase(user, from, to, '', '', delivery);
+      if (delivery) rows = rows.filter((x) => String(x.assigned_delivery || '').toLowerCase() === delivery);
+      const entregadosRows = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO');
+      const encomRows = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENCOMIENDA ENTREGADA');
+      const sumRevenue = (arr) => arr.reduce((s, x) => s + Number(x.total_gs || x.sale_total_gs || 0), 0);
+      const sumFee = (arr) => arr.reduce((s, x) => s + Number(x.delivery_fee_gs || 0), 0);
+      const fromDay = from || isoDay(nowIso());
+      const todayAssigned = rows.filter((x) => isoDay(x.assigned_at || x.created_at) === fromDay).length;
+      return {
+        entregados: { count: entregadosRows.length, revenue: sumRevenue(entregadosRows), delivery_fee: sumFee(entregadosRows), net: sumRevenue(entregadosRows) - sumFee(entregadosRows) },
+        encomiendas: { count: encomRows.length, revenue: sumRevenue(encomRows) },
+        today_assigned: todayAssigned,
+        rows
+      };
+    },
 
     async markRendicionPagada(token, orderId) {
       const user = await requireUser(token);
@@ -1287,11 +1256,25 @@ async getClosuresDetailedKPIs(token, deliveryEmail = '', fromISO = '', toISO = '
       return listOrdersBase(user, fromISO, toISO, '', '', '', norm(providerEmail));
     },
 
+    
     async debugProducts(token) {
       const user = await requireUser(token);
       const visible = await handlers.listProducts(token);
-      const { count } = await supabase.from('products').select('*', { count: 'exact', head: true });
-      return { count, visibleCount: Array.isArray(visible) ? visible.length : 0, user: { email: user.email, role: user.role } };
+      const { data: allProducts } = await supabase.from('products').select('*').eq('is_active', true);
+      const providerProducts = (allProducts || []).filter((p) => norm(p.provider_email || '') === norm(user.email || ''));
+      const publicProducts = (allProducts || []).filter((p) => !String(p.vendor_private_to || '').trim());
+      const privateProducts = (allProducts || []).filter((p) => !!String(p.vendor_private_to || '').trim());
+      return {
+        totalProductos: (allProducts || []).length,
+        productosProveedor: providerProducts,
+        productosPublicos: publicProducts,
+        productosPrivados: privateProducts,
+        visibles: visible,
+        usuario: { email: user.email, rol: user.role },
+        count: (allProducts || []).length,
+        visibleCount: Array.isArray(visible) ? visible.length : 0,
+        user: { email: user.email, role: user.role }
+      };
     },
 
     async debugProviderData(token) {
