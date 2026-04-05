@@ -3124,6 +3124,10 @@
     if (name !== 'chat') stopChatPolling();
     if (name !== 'mapa') stopMapPolling();
     try { onShowView(name); } catch(_e) {}
+    try { if (name === 'products') loadCatalog && loadCatalog(true); } catch(_e) {}
+    try { if (name === 'commissions') { if (me?.role === 'VENDEDOR') loadCommissionsForVendor && loadCommissionsForVendor(); else loadCommissions && loadCommissions(); } } catch(_e) {}
+    try { if (name === 'commissionRequests') loadCommissionRequests && loadCommissionRequests(); } catch(_e) {}
+    try { if (name === 'closures') loadClosures && loadClosures(); } catch(_e) {}
   };
 
   // sello de última actualización
@@ -3451,6 +3455,14 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       markUpdated();
       show(me.role==='DELIVERY' ? 'closures' : 'dashboard');
 
+setTimeout(() => {
+  try { hydrateRoleDependentFilters && hydrateRoleDependentFilters(); } catch(_e){}
+  try { loadCatalog && loadCatalog(true); } catch(_e){}
+  try { if (me?.role === 'VENDEDOR') { loadCommissionsForVendor && loadCommissionsForVendor(); } else if (me?.role === 'ADMIN' || me?.role === 'PROVEEDOR') { loadCommissions && loadCommissions(); } } catch(_e){}
+  try { loadCommissionRequests && loadCommissionRequests(); } catch(_e){}
+  try { if (me?.role === 'DELIVERY' || me?.role === 'ADMIN' || me?.role === 'PROVEEDOR') { loadClosures && loadClosures(); } } catch(_e){}
+}, 300);
+
       const b=document.getElementById('btnAddProduct');
       // === MODIFICADO: PROVEEDOR también puede agregar productos ===
       if (b) b.classList.toggle('hidden', !(me.role==='ADMIN' || me.role==='PROVEEDOR'));
@@ -3570,7 +3582,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
           if (commSelect) commSelect.innerHTML = options;
         }
        
-        toast('✅ Filtros de proveedor cargados');
       })
       .withFailureHandler(e => {
         console.error('Error cargando proveedores:', e);
@@ -5407,95 +5418,244 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   // =========================
   // Dashboard
   // =========================
-  
-function refreshDashboard(){
+  function refreshDashboard(){
     const tok=localStorage.getItem(tokenKey);
-    const f=document.getElementById('dash_from')?.value||'';
-    const t=document.getElementById('dash_to')?.value||'';
-    const ensurePayload = (res) => {
-      const safe = res || {};
-      safe.cards = safe.cards || { orders:0, sold:0, delivered:0, canceled:0, profit:0 };
-      safe.series = Array.isArray(safe.series) ? safe.series : [];
-      safe.pie = safe.pie || {};
-      safe.top = Array.isArray(safe.top) ? safe.top : [];
-      safe.map = Array.isArray(safe.map) ? safe.map : [];
-      safe.guides = safe.guides || { generated:0, pending:0, series:[] };
-      return safe;
-    };
-    const renderCommon = (raw) => {
-      const res = ensurePayload(raw);
-      const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
-      if (CHART_BARS) CHART_BARS.destroy();
-      CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{ type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]}, options:{responsive:true, maintainAspectRatio:false} });
-      const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
-      if (CHART_PIE) CHART_PIE.destroy();
-      CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{ type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false} });
-      const tl=document.getElementById('topList'); if (tl){ tl.innerHTML=''; (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); }); }
-      const ml=document.getElementById('mapList'); if (ml){ ml.innerHTML=''; (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); }); }
-      return res;
-    };
-
+    const f=document.getElementById('dash_from')?.value||''; const t=document.getElementById('dash_to')?.value||'';
+   
+    // === NUEVO: PROVEEDOR usa métricas específicas ===
     if (me?.role === 'PROVEEDOR') {
       loadProviderAdSpend();
-      apiRun.withSuccessHandler(raw=>{
-        const res = renderCommon(raw);
-        kpi_provider_orders.textContent = nf(res.cards.orders || 0);
-        kpi_provider_sold.textContent = nf(res.cards.sold || 0);
-        kpi_provider_delivered.textContent = nf(res.cards.delivered || 0);
-        kpi_provider_canceled.textContent = nf(res.cards.canceled || 0);
-        kpi_provider_profit.textContent = nf(res.cards.profit || 0);
+      apiRun.withSuccessHandler(res=>{
+        kpi_provider_orders.textContent = nf(res.cards.orders);
+        kpi_provider_sold.textContent = nf(res.cards.sold);
+        kpi_provider_delivered.textContent = nf(res.cards.delivered);
+        kpi_provider_canceled.textContent = nf(res.cards.canceled);
+        kpi_provider_profit.textContent = nf(res.cards.profit);
         kpi_provider_today_profit.textContent = nf(res.cards.delivered_today_profit || 0);
         kpi_provider_range_profit.textContent = nf(res.cards.delivered_range_profit || 0);
         updateProviderLiquidityKPI();
+
+        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
+        if (CHART_BARS) CHART_BARS.destroy();
+        CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
+          type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
+          options:{responsive:true, maintainAspectRatio:false}
+        });
+
+        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        if (CHART_PIE) CHART_PIE.destroy();
+        CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
+          type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
+        });
+
+        const tl=document.getElementById('topList'); tl.innerHTML='';
+        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        const ml=document.getElementById('mapList'); ml.innerHTML='';
+        (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
+
         markUpdated();
       }).withFailureHandler(e=>toast(e.message||e)).providerMetrics(tok,f,t);
-      return;
-    }
+    } else {
+      // Métricas normales para otros roles
+      apiRun.withSuccessHandler(res=>{
+        kpi_orders.textContent=nf(res.cards.orders);
+        kpi_sold.textContent=nf(res.cards.sold);
+        kpi_delivered.textContent=nf(res.cards.delivered);
+        kpi_canceled.textContent=nf(res.cards.canceled);
 
-    apiRun.withSuccessHandler(raw=>{
-      const res = renderCommon(raw);
-      kpi_orders.textContent=nf(res.cards.orders || 0);
-      kpi_sold.textContent=nf(res.cards.sold || 0);
-      kpi_delivered.textContent=nf(res.cards.delivered || 0);
-      kpi_canceled.textContent=nf(res.cards.canceled || 0);
-      if (me?.role === 'DELIVERY') {
-        const fromDate = f ? new Date(f+'T00:00:00') : new Date('1970-01-01');
-        const toDate   = t ? new Date(t+'T23:59:59') : new Date('2999-12-31');
-        let montoRendir = 0; let sumaEntregadoTotal = 0;
-        (lastOrders||[]).forEach(o=>{
-          const baseDate = o.assigned_at ? new Date(o.assigned_at) : new Date(o.created_at);
-          if (baseDate < fromDate || baseDate > toDate) return;
-          if ((o.assigned_delivery||'').toLowerCase() !== (me.email||'').toLowerCase()) return;
-          const status = String(o.status||'').toUpperCase();
-          if (status === 'ENTREGADO') {
-            const total = Number(o.total_gs||0);
-            const feeReal = Number(o.delivery_fee_gs||0);
-            const feeEst  = rateMap[norm(o.city)] || 0;
-            const fee = feeReal>0 ? feeReal : feeEst;
-            sumaEntregadoTotal += total;
-            montoRendir += (total - fee);
-          }
+        if (me?.role === 'DELIVERY') {
+          const fromDate = f ? new Date(f+'T00:00:00') : new Date('1970-01-01');
+          const toDate   = t ? new Date(t+'T23:59:59') : new Date('2999-12-31');
+          let montoRendir = 0; let sumaEntregadoTotal = 0;
+          (lastOrders||[]).forEach(o=>{
+            const baseDate = o.assigned_at ? new Date(o.assigned_at) : new Date(o.created_at);
+            if (baseDate < fromDate || baseDate > toDate) return;
+            if ((o.assigned_delivery||'').toLowerCase() !== (me.email||'').toLowerCase()) return;
+            const status = String(o.status||'').toUpperCase();
+            if (status === 'ENTREGADO') {
+              const total = Number(o.total_gs||0);
+              const feeReal = Number(o.delivery_fee_gs||0);
+              const feeEst  = rateMap[norm(o.city)] || 0;
+              const fee = feeReal>0 ? feeReal : feeEst;
+              sumaEntregadoTotal += total;
+              montoRendir += (total - fee);
+            }
+          });
+          document.getElementById('kpi_sum_entregado').textContent = nf(sumaEntregadoTotal);
+          kpi_profit.textContent = nf(montoRendir);
+        } else {
+          kpi_profit.textContent = nf(res.cards.profit);
+        }
+
+        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
+        if (CHART_BARS) CHART_BARS.destroy();
+        CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
+          type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
+          options:{responsive:true, maintainAspectRatio:false}
         });
-        document.getElementById('kpi_sum_entregado').textContent = nf(sumaEntregadoTotal);
-        kpi_profit.textContent = nf(montoRendir);
-      } else {
-        kpi_profit.textContent = nf(res.cards.profit || 0);
-      }
-      if (me?.role==='DESPACHANTE'){
-        kpi_guides_gen.textContent = nf(res.guides?.generated||0);
-        kpi_guides_pend.textContent = nf(res.guides?.pending||0);
-        const gl=(res.guides?.series||[]).map(x=>x.date);
-        const gg=(res.guides?.series||[]).map(x=>x.gen);
-        const gp=(res.guides?.series||[]).map(x=>x.pend);
-        if (CHART_GG) CHART_GG.destroy();
-        CHART_GG=new Chart(document.getElementById('chartGuideGen').getContext('2d'),{ type:'line', data:{labels:gl, datasets:[{label:'Generadas', data:gg}]}, options:{responsive:true, maintainAspectRatio:false} });
-        if (CHART_GP) CHART_GP.destroy();
-        CHART_GP=new Chart(document.getElementById('chartGuidePend').getContext('2d'),{ type:'line', data:{labels:gl, datasets:[{label:'Pendientes', data:gp}]}, options:{responsive:true, maintainAspectRatio:false} });
-      }
-      markUpdated();
-    }).withFailureHandler(e=>toast(e.message||e)).metrics(tok,f,t);
+
+        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        if (CHART_PIE) CHART_PIE.destroy();
+        CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
+          type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
+        });
+
+        if (me?.role==='DESPACHANTE'){
+          kpi_guides_gen.textContent = nf(res.guides?.generated||0);
+          kpi_guides_pend.textContent = nf(res.guides?.pending||0);
+          const gl=(res.guides?.series||[]).map(x=>x.date);
+          const gg=(res.guides?.series||[]).map(x=>x.gen);
+          const gp=(res.guides?.series||[]).map(x=>x.pend);
+          if (CHART_GG) CHART_GG.destroy();
+          CHART_GG=new Chart(document.getElementById('chartGuideGen').getContext('2d'),{
+            type:'line', data:{labels:gl, datasets:[{label:'Generadas', data:gg}]}, options:{responsive:true, maintainAspectRatio:false}
+          });
+          if (CHART_GP) CHART_GP.destroy();
+          CHART_GP=new Chart(document.getElementById('chartGuidePend').getContext('2d'),{
+            type:'line', data:{labels:gl, datasets:[{label:'Pendientes', data:gp}]}, options:{responsive:true, maintainAspectRatio:false}
+          });
+        }
+
+        const tl=document.getElementById('topList'); tl.innerHTML='';
+        (res.top||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.name}: ${nf(x.qty)} (Gs ${nf(x.revenue)})`; tl.appendChild(li); });
+        const ml=document.getElementById('mapList'); ml.innerHTML='';
+        (res.map||[]).forEach(x=>{ const li=document.createElement('li'); li.textContent=`${x.city}: ${nf(x.qty)} pedidos (Gs ${nf(x.revenue)})`; ml.appendChild(li); });
+
+        markUpdated();
+      }).withFailureHandler(e=>toast(e.message||e)).metrics(tok,f,t);
+    }
+   
+    // === NUEVO: Cargar datos adicionales ===
+    if (me?.role === 'DELIVERY') {
+      loadDeliveryProfit();
+    }
   }
 
+  // =========================
+  // Wallet
+  // =========================
+  function refreshWallet(){
+    const tok=localStorage.getItem(tokenKey);
+    apiRun.withSuccessHandler(res=>{
+      w_balance.textContent = nf(res.balance_gs||0);
+      const tb=document.getElementById('wallet_tbody'); tb.innerHTML='';
+      (res.txs||[]).forEach(t=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML=`<td>${new Date(t.created_at).toLocaleString('es-PY')}</td>
+          <td>${t.type}</td><td>${t.order_id||''}</td><td class="right">${nf(t.amount_gs)}</td><td>${t.note||''}</td>`;
+        tb.appendChild(tr);
+      });
+      markUpdated();
+    }).getWallet(tok, '');
+  }
+
+  // =========================
+  // Ganancias
+  // =========================
+  function loadEarnings(){
+    const tok=localStorage.getItem(tokenKey);
+    const f=document.getElementById('earn_from')?.value || '';
+    const t=document.getElementById('earn_to')?.value || '';
+    apiRun.withSuccessHandler(res=>{
+      document.getElementById('earn_kpi_today').textContent = nf(res?.kpis?.gain_today_gs || 0);
+      document.getElementById('earn_kpi_range').textContent = nf(res?.kpis?.gain_range_gs || 0);
+      document.getElementById('earn_kpi_units').textContent = nf(res?.kpis?.delivered_units || 0);
+      document.getElementById('earn_kpi_products').textContent = nf(res?.kpis?.products || 0);
+      const tb=document.getElementById('earnings_tbody');
+      if (!tb) return;
+      tb.innerHTML='';
+      (res?.rows||[]).forEach(r=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML = `<td>${r.title || ''}</td>
+          <td class="right">${nf(r.price_gs || 0)}</td>
+          <td class="right">${nf(r.real_cost_gs || 0)}</td>
+          <td class="right">${nf(r.gain_unit_gs || 0)}</td>
+          <td class="right">${nf(r.real_stock || 0)}</td>
+          <td class="right">${nf(r.delivered_qty || 0)}</td>
+          <td class="right">${nf(r.gain_total_gs || 0)}</td>`;
+        tb.appendChild(tr);
+      });
+      markUpdated();
+    }).withFailureHandler(e=>toast(e.message||e)).getProviderEarnings(tok, f, t, '');
+  }
+
+  // =========================
+  // Novedades
+  // =========================
+  function refreshNews(){
+    const tok=localStorage.getItem(tokenKey);
+    apiRun.withSuccessHandler(rows=>{
+      const tb=document.getElementById('news_tbody'); tb.innerHTML='';
+      (rows||[]).forEach(n=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML=`<td>${new Date(n.created_at).toLocaleString('es-PY')}</td><td>${n.order_id}</td><td>${n.type}</td><td>${n.note||''}</td>`;
+        tb.appendChild(tr);
+      });
+      markUpdated();
+    }).listNews(tok);
+  }
+
+  // =========================
+  // Tarifas + Precios cliente
+  // =========================
+  function loadRates(){
+    const tok=localStorage.getItem(tokenKey);
+    // === MODIFICADO: PROVEEDOR también puede ver tarifas ===
+    document.getElementById('ratesAdminBox').classList.toggle('hidden', !(me?.role==='ADMIN' || me?.role==='PROVEEDOR'));
+    apiRun.withSuccessHandler(rows=>{
+      const tb=document.getElementById('rates_tbody'); tb.innerHTML='';
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${r.email}</td><td>${r.city}</td><td class="right">${nf(r.rate_gs)}</td>`; tb.appendChild(tr); });
+      allRatesMap = {};
+      (rows||[]).forEach(r=>{ const em = norm(String(r.email||'')); const ct = norm(String(r.city||'')); if (!allRatesMap[em]) allRatesMap[em] = {}; allRatesMap[em][ct] = Number(r.rate_gs||0); });
+      rateMap = {}; if (me?.role === 'DELIVERY') { (rows||[]).forEach(r=>{ rateMap[norm(r.city)] = Number(r.rate_gs||0); }); }
+      markUpdated();
+    }).getDeliveryRates(tok, '');
+  }
+  function saveRate(){
+    const tok=localStorage.getItem(tokenKey);
+    apiRun.withSuccessHandler(()=>{ toast('Tarifa guardada'); loadRates(); })
+      .withFailureHandler(e=>toast(e.message||e))
+      .setDeliveryRate(tok, dr_email.value.trim(), dr_city.value.trim(), Number(dr_rate.value||0));
+  }
+  function loadClientPrices(){
+    const tok=localStorage.getItem(tokenKey);
+    document.getElementById('clientPricesAdminBox').classList.toggle('hidden', me?.role!=='ADMIN');
+    apiRun.withSuccessHandler(rows=>{
+      const tb=document.getElementById('client_prices_tbody'); if (!tb) return; tb.innerHTML='';
+      (rows||[]).forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.city}</td><td class="right">${nf(r.price_gs || 0)}</td>`; tb.appendChild(tr); });
+      markUpdated();
+    }).withFailureHandler(e=>toast(e.message||e)).getDeliveryClientPrices(tok);
+  }
+  function saveClientPrice(){
+    const tok=localStorage.getItem(tokenKey);
+    const city = (cp_city.value||'').trim(); const price = Number(cp_price.value||0);
+    if (!city || price<=0){ toast('Ciudad y precio son obligatorios'); return; }
+    apiRun.withSuccessHandler(()=>{ toast('Precio guardado'); cp_city.value=''; cp_price.value=''; loadClientPrices(); buildCityDropdown(); })
+      .withFailureHandler(e=>toast(e.message||e))
+      .setClientCityPrice(tok, city, price);
+  }
+
+  // =========================
+  // Guía
+  // =========================
+  function openGuide(id){
+    guideOrderId=id; guideText.value='Cargando...'; document.getElementById('guideModal').style.display='flex';
+    const tok=localStorage.getItem(tokenKey);
+    apiRun.withSuccessHandler(txt=>{ guideText.value=txt; })
+      .withFailureHandler(e=>{ guideText.value='Error: '+(e.message||e); })
+      .getGuideText(tok,id);
+  }
+  function closeGuide(){ document.getElementById('guideModal').style.display='none'; }
+  function downloadGuide(){
+    const tok=localStorage.getItem(tokenKey);
+    apiRun.withSuccessHandler(f=>{ window.open(f.url,'_blank'); })
+      .withFailureHandler(e=>toast(e.message||e))
+      .generateGuidePDF(tok, guideOrderId);
+  }
+
+  // =========================
+  // Pago de Comisiones (ADMIN y PROVEEDOR) con Estado 1 editable
+  // =========================
   function loadCommissions(){
     const tok = localStorage.getItem(tokenKey);
     const f=document.getElementById('pc_from').value||''; const t=document.getElementById('pc_to').value||'';
@@ -5629,7 +5789,7 @@ function refreshDashboard(){
           renderCommissionsTable(visibles);
         })
         .withFailureHandler(e => toast(e.message || e))
-        .getVendorCommissions(tok, vendorEmail, f, t, onlyNormalized, q, providerFilter);
+        .getVendorCommissions(tok, f, t, onlyNormalized, q);
     } else {
       // ADMIN/PROVEEDOR - comportamiento normal
       document.getElementById('vendor_email_box').classList.add('hidden');
@@ -6001,7 +6161,7 @@ function refreshDashboard(){
         document.getElementById('cl_k_assigned_today').textContent = nf(result.today_assigned);
       })
       .withFailureHandler(e => toast(e.message || e))
-      .getClosuresDetailedKPIs(tok, d, f, t);
+      .getClosuresDetailedKPIs(tok, f, t, d);
   }
 
   function loadClosures(){
@@ -6697,12 +6857,22 @@ function renderPendingGuidesSimplified() {
   // =========================
   // NUEVAS FUNCIONES DE DEBUG PARA PROVEEDOR
   // =========================
-  function debugProducts(){
+  
+function debugProducts(){
     const tok = localStorage.getItem(tokenKey);
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
+        const total = Number(result.totalProductos || result.count || 0);
+        const proveedor = Array.isArray(result.productosProveedor) ? result.productosProveedor.length : 0;
+        const pub = Array.isArray(result.productosPublicos) ? result.productosPublicos.length : 0;
+        const priv = Array.isArray(result.productosPrivados) ? result.productosPrivados.length : 0;
+        alert(`DEBUG PRODUCTOS:
+
+Total productos: ${total}
+Productos del proveedor: ${proveedor}
+Productos públicos: ${pub}
+Productos privados: ${priv}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
@@ -6710,6 +6880,7 @@ function renderPendingGuidesSimplified() {
       })
       .debugProducts(tok);
   }
+
 
   function debugProviderData(){
     const tok = localStorage.getItem(tokenKey);
@@ -8616,7 +8787,7 @@ function renderPendingGuidesSimplified() {
         }
         toast(e.message || e);
       })
-      .createCommissionRequest(tok, provider, amount, note, f, t);
+      .createCommissionRequest(tok, { provider_email: provider, amount_gs: amount, note, fromISO: f, toISO: t });
   }
 
   function loadCommissionRequests(){
@@ -8710,6 +8881,46 @@ function renderPendingGuidesSimplified() {
       };
       targetCell.appendChild(document.createElement('div')).appendChild(btn);
     });
+  }
+
+  if (typeof loadCommissions === 'function') {
+    const __oldLoadCommissions = loadCommissions;
+    loadCommissions = function(){
+      __oldLoadCommissions.apply(this, arguments);
+      setTimeout(() => loadVendorProviderBalances(getCurrentVendorForCommissionBalances(), document.getElementById('pc_from')?.value || '', document.getElementById('pc_to')?.value || ''), 300);
+    };
+  }
+
+  if (typeof loadCommissionsForVendor === 'function') {
+    const __oldLoadCommissionsForVendor = loadCommissionsForVendor;
+    loadCommissionsForVendor = function(){
+      const ret = __oldLoadCommissionsForVendor.apply(this, arguments);
+      setTimeout(() => {
+        const btn = document.getElementById('btnOpenCommissionRequest');
+        if (btn) btn.classList.toggle('hidden', me?.role !== 'VENDEDOR');
+        const vendor = getCurrentVendorForCommissionBalances();
+        const from = document.getElementById('pc_from')?.value || '';
+        const to = document.getElementById('pc_to')?.value || '';
+        loadVendorProviderBalances(vendor, from, to);
+        loadCommissionRequestBalances(vendor, from, to);
+      }, 300);
+      return ret;
+    };
+  }
+
+  if (typeof renderCommissionsTable === 'function') {
+    const __oldRenderCommissionsTable = renderCommissionsTable;
+    renderCommissionsTable = function(rows){
+      const ret = __oldRenderCommissionsTable.apply(this, arguments);
+      setTimeout(() => {
+        const vendor = getCurrentVendorForCommissionBalances();
+        const from = document.getElementById('pc_from')?.value || '';
+        const to = document.getElementById('pc_to')?.value || '';
+        loadVendorProviderBalances(vendor, from, to);
+        if (me?.role === 'VENDEDOR') loadCommissionRequestBalances(vendor, from, to);
+      }, 100);
+      return ret;
+    };
   }
 
   if (typeof loadClosures === 'function') {
