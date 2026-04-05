@@ -2953,54 +2953,6 @@
   // Variables y helpers
   // =========================
   let me=null, products=[], deliveries=[], lastOrders=[], catalogMap={}, clientCityPrices=[];
-
-  function computeOrderCommission(order){
-    const total = Number(order?.total_gs ?? order?.sale_total_gs ?? 0);
-    const cost = Number(order?.cost_total_gs ?? 0);
-    let delivery = Number(order?.delivery_fee_gs ?? 0);
-    if (!delivery) {
-      const city = String(order?.city || '').trim();
-      delivery = Number(getClientCityPrice(city) || 0);
-    }
-    return Math.max(total - cost - delivery, 0);
-  }
-
-  function getOrderItemsNormalized(order){
-    const raw = Array.isArray(order?.items) ? order.items : (Array.isArray(order?.order_items) ? order.order_items : []);
-    return raw.map(it => ({
-      title: String(it?.title || it?.name || it?.sku || '').trim(),
-      qty: Number(it?.qty || it?.quantity || 0) || 0,
-      price_gs: Number(it?.price_gs || it?.price || it?.sale_gs || 0) || 0
-    })).filter(it => it.title);
-  }
-
-  function formatOrderGuideText(order){
-    const o = order || {};
-    const code = `A${o.id ?? ''}`;
-    const items = getOrderItemsNormalized(o);
-    const total = Number(o?.total_gs ?? o?.sale_total_gs ?? 0);
-    const lines = [
-      `Pedido: ${code}`,
-      `Vendedor: ${o.vendor_email || o.created_by || ''}`,
-      `Cliente: ${o.customer_name || ''}`,
-      `Teléfono: ${o.phone || ''}`,
-      `Ciudad: ${o.city || ''}`,
-      `Calle: ${o.street || ''}`,
-      `Barrio: ${o.district || ''}`,
-      `Email: ${o.email || ''}`,
-      '',
-      'Items:'
-    ];
-    items.forEach(it => {
-      lines.push(`- ${it.title} — Cant: ${it.qty} — Precio: ${nf(it.price_gs)} Gs`);
-    });
-    lines.push(`Total: ${nf(total)} Gs`);
-    return lines.join('\n');
-  }
-
-  function getOrderFromCache(orderId){
-    return (lastOrders || []).find(o => String(o.id) === String(orderId)) || null;
-  }
   let CHART_BARS=null, CHART_PIE=null, CHART_GG=null, CHART_GP=null, CHART_RANKING=null;
   let guideOrderId=null;
   let rateMap = {}; let allRatesMap = {};
@@ -3290,6 +3242,17 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       .login(li_email.value.trim(), li_pass.value, remember);
   }
   function logout(){ localStorage.removeItem(tokenKey); openLogin(); }
+  let appAutoRefreshTimer = null;
+  function scheduleAutoRefresh(){
+    if (appAutoRefreshTimer) clearInterval(appAutoRefreshTimer);
+    appAutoRefreshTimer = setInterval(()=>{
+      if (document.hidden || !me) return;
+      try { refreshOrders(); } catch(_e){}
+      try { refreshDashboard(); } catch(_e){}
+      try { if (document.getElementById('rates') && !document.getElementById('rates').classList.contains('hidden')) { loadRates(); loadClientPrices(); } } catch(_e){}
+    }, 30000);
+  }
+  document.addEventListener('visibilitychange', ()=>{ if (!document.hidden && me) { try { refreshOrders(); } catch(_e){} try { refreshDashboard(); } catch(_e){} } });
 
   // =========================
   // Función unificada para actualizar estado de pedidos
@@ -3421,6 +3384,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       loadClientPrices();
       refreshDashboard();
       refreshWallet();
+      scheduleAutoRefresh();
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
       if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
@@ -4727,41 +4691,53 @@ vis('navProd', isAuthed && role!=='DELIVERY');
   }
 
   function getItems(){
-    const rows=[...document.querySelectorAll('.orderItemRow')]; const items=[];
+    const rows=[...document.querySelectorAll('.orderItemRow')];
+    const items=[];
+    const vendorEmail = String(me?.email || '').trim().toLowerCase();
     rows.forEach(row=>{
-      const sel=row.querySelector('.itemSelect'); const sale=row.querySelector('.ventaInp'); const qty=row.querySelector('.qtyInp');
-      const sku=sel?.value; const s=Number(sale?.value||0); const q=Number(qty?.value||0);
-      if (!sku || s<=0 || q<=0) return; items.push({sku, sale_gs:s, qty:q});
+      const sel=row.querySelector('.itemSelect');
+      const sale=row.querySelector('.ventaInp');
+      const qty=row.querySelector('.qtyInp');
+      const sku=String(sel?.value||'').trim();
+      const s=Number(sale?.value||0);
+      const q=Number(qty?.value||0);
+      const prod=catalogMap?.[sku] || null;
+      if (!sku || !prod || s<=0 || q<=0) return;
+      items.push({
+        sku,
+        title: String(prod.title || prod.name || sku).trim(),
+        qty: q,
+        price_gs: s,
+        provider_price_gs: Number(prod.provider_price_gs || prod.real_cost_gs || prod.real_cost || 0),
+        provider_email: String(prod.provider_email || '').trim().toLowerCase(),
+        vendor_email: vendorEmail
+      });
     });
     return items;
   }
  
   function recalcOrder(){
-    if (!catalogMap || Object.keys(catalogMap).length === 0) return;
-
+    if (!catalogMap || Object.keys(catalogMap).length === 0) {
+      // Catálogo no cargado aún
+      return;
+    }
+   
     const rows=[...document.querySelectorAll('.orderItemRow')];
     let totalVenta=0, totalProv=0;
     rows.forEach(row=>{
-      const sel=row.querySelector('.itemSelect');
-      const sale=row.querySelector('.ventaInp');
-      const qty=row.querySelector('.qtyInp');
-      const provSpan=row.querySelector('.provUnit');
-      const subProv=row.querySelector('.subProv');
-      const sku=String(sel?.value||'').trim();
-      const provUnit=Number(catalogMap?.[sku]?.provider_price_gs||0);
+      const sel=row.querySelector('.itemSelect'); const sale=row.querySelector('.ventaInp'); const qty=row.querySelector('.qtyInp');
+      const provSpan=row.querySelector('.provUnit'); const subProv=row.querySelector('.subProv');
+      const sku=sel?.value||''; const provUnit=Number(catalogMap[sku]?.provider_price_gs||0);
       if (provSpan) provSpan.textContent=nf(provUnit);
-      const s=Number(sale?.value||0);
-      const q=Number(qty?.value||0);
-      totalVenta += s * q;
-      totalProv += provUnit * q;
-      if (subProv) subProv.textContent=nf(provUnit*q);
+      const s=Number(sale?.value||0); const q=Number(qty?.value||0);
+      totalVenta+=s; totalProv+=provUnit*q; if (subProv) subProv.textContent=nf(provUnit*q);
     });
     const city = String(o_city?.value || '').trim();
-    const del = Number(getClientCityPrice(city) || 0);
-    if (cityHint) cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
+    const del = getClientCityPrice(city);
+    cityHint.textContent = city ? (del ? `Delivery cobrado: ${nf(del)} Gs` : 'Sin tarifa cargada para esta ciudad') : '';
     o_total.value = nf(totalVenta);
     o_delivery.value = nf(del);
-    o_commission.value = nf(Math.max(totalVenta - (totalProv + del), 0));
+    o_commission.value = nf(totalVenta - (totalProv + del));
   }
 
   function resetOrderPrefillFlag(){
@@ -4832,6 +4808,9 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     if (name === 'products') {
       loadCatalog();
     }
+    if (name === 'orders') {
+      try { refreshOrders(); } catch(_e) {}
+    }
     if (name === 'rates') {
       try { loadRates(); } catch(_e) {}
       try { loadClientPrices(); } catch(_e) {}
@@ -4848,15 +4827,27 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
 
     const tok = localStorage.getItem(tokenKey);
-    const order={ customer_name:o_customer.value.trim(), phone:o_phone.value.trim(), city:o_city.value.trim(), street:o_street.value.trim(), district:o_district.value.trim(),
-      email:o_email.value.trim(), obs:o_obs.value.trim(), vendor_email:String(me?.email || '').trim().toLowerCase(), items:getItems() };
+    const order = {
+      customer_name: o_customer.value.trim(),
+      phone: o_phone.value.trim(),
+      city: o_city.value.trim(),
+      street: o_street.value.trim(),
+      district: o_district.value.trim(),
+      email: o_email.value.trim(),
+      obs: o_obs.value.trim(),
+      items: getItems(),
+      delivery_fee_gs: Number(String(o_delivery?.value || '0').replace(/\./g, '').replace(/,/g, '.')) || 0,
+      vendor_email: (me?.role === 'VENDEDOR')
+        ? String(me.email || '').trim().toLowerCase()
+        : ''
+    };
 
     if (!order.customer_name || !order.phone || !order.city) {
       toast('Completa cliente / teléfono / ciudad');
       return;
     }
 
-    if (order.items.length===0){
+    if (order.items.length === 0) {
       toast('Agrega al menos 1 ítem');
       return;
     }
@@ -4870,19 +4861,18 @@ vis('navProd', isAuthed && role!=='DELIVERY');
     }
 
     apiRun
-      .withSuccessHandler((res)=>{
+      .withSuccessHandler((res) => {
         toast(`✅ Pedido guardado${res?.id ? ' #'+res.id : ''}`);
         refreshOrders();
         refreshDashboard();
 
-        o_customer.value='';
-        o_phone.value='';
-        o_email.value='';
-        o_street.value='';
-        o_district.value='';
-        o_obs.value='';
-        if (o_city) o_city.value='';
-        itemsBox.innerHTML='';
+        o_customer.value = '';
+        o_phone.value = '';
+        o_email.value = '';
+        o_street.value = '';
+        o_district.value = '';
+        o_obs.value = '';
+        itemsBox.innerHTML = '';
         resetOrderPrefillFlag();
         addItemRow();
 
@@ -4891,10 +4881,10 @@ vis('navProd', isAuthed && role!=='DELIVERY');
           saveBtn.disabled = false;
           saveBtn.textContent = originalText;
         }
-        recalcOrder();
       })
-      .withFailureHandler(e=>{
-        toast('❌ Error: ' + (e.message || e));
+      .withFailureHandler((e) => {
+        toast('❌ Error: ' + (e?.message || e));
+
         isSavingOrder = false;
         if (saveBtn) {
           saveBtn.disabled = false;
@@ -5142,7 +5132,12 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       if (meRole === 'DELIVERY') {
         const feeAsentado = Number(o.delivery_fee_gs||0);
         colVal = feeAsentado > 0 ? feeAsentado : (rateMap[norm(o.city)] || 0);
-      } else { colVal = Number(o.commission_gs||0); }
+      } else {
+        const totalGs = Number(o.total_gs || o.sale_total_gs || 0);
+        const costGs = Number(o.cost_total_gs || 0);
+        const deliveryGs = Number(o.delivery_fee_gs || 0);
+        colVal = Math.max(Number(o.commission_gs ?? (totalGs - costGs - deliveryGs)), 0);
+      }
 
       // ===== NUEVO: Mostrar proveedores para ADMIN, VENDEDOR, PROVEEDOR (con el nuevo formato) =====
       const providersHtml = o.provider_emails_list
@@ -5188,8 +5183,8 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         </td>
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td>
-        <td>${o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
-        <td class="right">${nf(o.total_gs)}</td>
+        <td>${o.vendor_email||o.created_by||''}</td><td>${o.assigned_delivery||''}</td>
+        <td class="right">${nf(Number(o.total_gs || o.sale_total_gs || 0))}</td>
         <td class="right">${nf(colVal)}</td>
         <td>${providersHtml}</td> <!-- NUEVA COLUMNA: PROVEEDORES -->
         <td>${stateSel}</td><td>${state2Sel}</td><td>${delSel}</td>
@@ -5691,7 +5686,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         tr.innerHTML=`
           <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
           <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(o.commission_gs)}</td>
+          <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
           <td>${stateSel}</td>
           <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
           <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
@@ -5745,20 +5740,26 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   // ===== NUEVA FUNCIÓN: Cargar comisiones para VENDEDOR ===
   function loadCommissionsForVendor() {
     const tok = localStorage.getItem(tokenKey);
-
+   
+    // Si es VENDEDOR, usar su email automáticamente
     if (me?.role === 'VENDEDOR') {
       document.getElementById('vendor_email_box').classList.remove('hidden');
       document.getElementById('vendor_email_admin_box').classList.add('hidden');
-
+     
       const vendorEmail = me.email;
       document.getElementById('pc_vendor').value = vendorEmail;
+     
+      // Cambiar título
       document.getElementById('commissions_title').textContent = '💰 Mis Comisiones';
-
+     
+      // Cargar comisiones específicas del vendedor
       const f = document.getElementById('pc_from')?.value || '';
       const t = document.getElementById('pc_to')?.value || '';
-      const only = document.getElementById('pc_only')?.value || 'PENDIENTE';
+      const only = document.getElementById('pc_only')?.value || '';
       const q = (document.getElementById('pc_q')?.value || '').trim();
+     
       const providerFilter = document.getElementById('comm_filter_provider')?.value || '';
+      const onlyNormalized = only || 'PENDIENTE';
       const requestBtn = document.getElementById('btnOpenCommissionRequest');
       const bulkActions = document.getElementById('bulkActions');
       if (requestBtn) requestBtn.classList.remove('hidden');
@@ -5769,22 +5770,17 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       apiRun
         .withSuccessHandler(rows => {
           let visibles = rows || [];
-          const allowed = new Set(['ENTREGADO','ENCOMIENDA ENTREGADA']);
-          visibles = visibles.filter(o => allowed.has(String(o.status||'').toUpperCase()));
           if (providerFilter) {
-            visibles = visibles.filter(o => String(o.provider_email || '').trim() === String(providerFilter).trim() || String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
+            visibles = visibles.filter(o => String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
           }
-          if (only === 'PENDIENTE') visibles = visibles.filter(o => !(o.paid ?? o.commission_paid));
-          if (only === 'PAGADO') visibles = visibles.filter(o => !!(o.paid ?? o.commission_paid));
-          renderCommissionsTable(visibles.map(o => ({
-            ...o,
-            total_gs: Number(o.total_gs ?? o.sale_total_gs ?? 0),
-            commission_gs: computeOrderCommission(o)
-          })));
+          if (onlyNormalized === 'PENDIENTE') visibles = visibles.filter(o => !o.commission_paid);
+          if (onlyNormalized === 'PAGADO') visibles = visibles.filter(o => !!o.commission_paid);
+          renderCommissionsTable(visibles);
         })
         .withFailureHandler(e => toast(e.message || e))
-        .listCommissionsFlex(tok, f, t, vendorEmail, only, q, providerFilter);
+        .getVendorCommissions(tok, f, t, onlyNormalized, q);
     } else {
+      // ADMIN/PROVEEDOR - comportamiento normal
       document.getElementById('vendor_email_box').classList.add('hidden');
       document.getElementById('vendor_email_admin_box').classList.remove('hidden');
       document.getElementById('commissions_title').textContent = '💰 Pago de comisiones';
@@ -6439,30 +6435,51 @@ function renderPendingGuidesSimplified() {
 
   function abrirGuiaLimpia(orderId) {
     if (!orderId) return;
-    const order = getOrderFromCache(orderId);
-    if (!order) { toast('Pedido no encontrado'); return; }
-    const text = formatOrderGuideText(order);
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+   
+    const tok = localStorage.getItem(tokenKey);
+    if (!tok) { toast('No estás autenticado'); return; }
+   
+    toast('📋 Generando guía...');
+   
+    apiRun
+      .withSuccessHandler(function(resultado) {
+        if (resultado.success && resultado.text) {
+          const blob = new Blob([resultado.text], {
+            type: 'text/plain;charset=utf-8'
+          });
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank');
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+        }
+      })
+      .withFailureHandler(function(error) {
+        toast('Error: ' + error.message);
+      })
+      .getGuideCleanText(tok, orderId);
   }
 
   function copiarGuiaLimpia(orderId) {
-    const order = getOrderFromCache(orderId);
-    if (!order) { toast('Pedido no encontrado'); return; }
-    const text = formatOrderGuideText(order);
-    navigator.clipboard.writeText(text)
-      .then(() => toast('✅ Guía copiada'))
-      .catch(() => {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        toast('✅ Texto copiado ✓');
-      });
+    const tok = localStorage.getItem(tokenKey);
+    if (!tok) { toast('No estás autenticado'); return; }
+   
+    apiRun
+      .withSuccessHandler(function(resultado) {
+        if (resultado.success && resultado.text) {
+          navigator.clipboard.writeText(resultado.text)
+            .then(() => toast('✅ Guía copiada'))
+            .catch(() => {
+              const textarea = document.createElement('textarea');
+              textarea.value = resultado.text;
+              document.body.appendChild(textarea);
+              textarea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textarea);
+              toast('✅ Texto copiado ✓');
+            });
+        }
+      })
+      .withFailureHandler(error => toast('Error: ' + error.message))
+      .getGuideCleanText(tok, orderId);
   }
 
   // =========================
@@ -6604,28 +6621,35 @@ function renderPendingGuidesSimplified() {
     if (allSelected.length === 0) { toast('Seleccioná al menos una guía'); return; }
     if (allSelected.length > MAX_BULK_GUIDES) { toast(`Máximo ${MAX_BULK_GUIDES} guías`); return; }
     if (!confirm(`¿Generar TXT con ${allSelected.length} guías?`)) return;
+    const tok = localStorage.getItem(tokenKey);
     toast(`📄 Generando TXT...`);
     const txtBtn = document.getElementById('bulkTxtBtn');
     if (txtBtn) txtBtn.disabled = true;
-    try {
-      const text = allSelected.map(id => {
-        const order = getOrderFromCache(id);
-        return order ? formatOrderGuideText(order) : `Pedido: A${id}`;
-      }).join('\n\n----------------------------------------\n\n');
-      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `guias_${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast(`✅ TXT descargado`);
-    } catch (err) {
-      toast(`❌ Error al generar TXT: ${err.message || err}`);
-    }
-    if (txtBtn) txtBtn.disabled = false;
+    apiRun
+      .withSuccessHandler(function(result) {
+        try {
+          const text = String(result?.text || '');
+          if (!result || !result.success || !text) throw new Error('Sin contenido TXT');
+          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `guias_${new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')}.txt`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          toast(`✅ TXT descargado`);
+        } catch (err) {
+          toast(`❌ Error al generar TXT: ${err.message || err}`);
+        }
+        if (txtBtn) txtBtn.disabled = false;
+      })
+      .withFailureHandler(function(error) {
+        toast(`❌ Error: ${error.message || error}`);
+        if (txtBtn) txtBtn.disabled = false;
+      })
+      .generateBulkGuidesTXT(tok, allSelected);
   }
 
   function generateBulkPDF() {
@@ -8414,53 +8438,56 @@ function renderPendingGuidesSimplified() {
   function renderCommissionsTable(rows) {
     const tb = document.getElementById('comms_tbody');
     if (!tb) return;
-
+   
     tb.innerHTML = '';
+
+    // KPIs (sirve para VENDEDOR y para cualquier render de esta tabla)
     const kCntEl = document.getElementById('pc_k_cnt');
     const kSumEl = document.getElementById('pc_k_sum');
     let sum = 0;
-    (rows||[]).forEach(o=>{ sum += Number(o.commission_gs ?? computeOrderCommission(o)); });
+    (rows||[]).forEach(o=>{ sum += Number(o.commission_gs || 0); });
     if (kCntEl) kCntEl.textContent = nf((rows||[]).length);
     if (kSumEl) kSumEl.textContent = nf(sum);
 
+   
     const state1Opts = ['ENTREGADO','ENCOMIENDA ENTREGADA'];
-
+   
     rows.forEach(o => {
-      const totalGs = Number(o.total_gs ?? o.sale_total_gs ?? 0);
-      const commissionGs = Number(o.commission_gs ?? computeOrderCommission(o));
-      const isPaid = !!(o.paid ?? o.commission_paid);
       const stateSel = `<select class="commStateSel" data-id="${o.id}">
         ${state1Opts.map(s=>`<option value="${s}" ${s===o.status?'selected':''}>${s}</option>`).join('')}
       </select>`;
-      const selPay=`<select class="commPaySel ${isPaid?'pay-paid':'pay-pending'}" data-id="${o.id}">
-        <option value="PENDIENTE" ${!isPaid?'selected':''}>PENDIENTE</option>
-        <option value="PAGADO" ${isPaid?'selected':''}>PAGADO</option>
+      const selPay=`<select class="commPaySel ${o.commission_paid?'pay-paid':'pay-pending'}" data-id="${o.id}">
+        <option value="PENDIENTE" ${!o.commission_paid?'selected':''}>PENDIENTE</option>
+        <option value="PAGADO" ${o.commission_paid?'selected':''}>PAGADO</option>
       </select>`;
       const tr=document.createElement('tr');
       tr.innerHTML=`
         <td>${new Date(o.created_at).toLocaleString('es-PY')}</td>
         <td>${o.id}</td><td>${o.city||''}</td><td>${o.customer_name||''}</td><td>${o.vendor_email||''}</td>
-        <td>${o.assigned_delivery||''}</td><td class="right">${nf(totalGs)}</td><td class="right">${nf(commissionGs)}</td>
+        <td>${o.assigned_delivery||''}</td><td class="right">${nf(o.total_gs)}</td><td class="right">${nf(Number(o.commission_gs ?? ((Number(o.total_gs || o.sale_total_gs || 0)) - Number(o.cost_total_gs || 0) - Number(o.delivery_fee_gs || 0))))}</td>
         <td>${stateSel}</td>
         <td>${selPay} ${o.paid_at?`<span class="chip">${new Date(o.paid_at).toLocaleDateString('es-PY')}</span>`:''}</td>
         <td><button class="btn small" onclick="abrirGuiaLimpia('${o.id}')" style="padding:4px 8px; font-size:11px;">📄</button></td>`;
       tb.appendChild(tr);
     });
 
+    // Agregar event listeners
     tb.querySelectorAll('.commStateSel').forEach(s=>{
-      s.onchange=(e)=>{ updateOrderStatusUnified(e.target); };
+      s.onchange=(e)=>{
+        updateOrderStatusUnified(e.target);
+      };
     });
-
+   
     tb.querySelectorAll('.commPaySel').forEach(s=>{
       applyCommissionPaidSelectStyles(s.parentNode || document);
       s.onchange=(e)=>{
         const id=e.target.getAttribute('data-id'); const paid=(e.target.value==='PAGADO'); const tok=localStorage.getItem(tokenKey);
-
+       
         e.target.disabled = true;
         e.target.classList.add('updating');
         const previousStatus = e.target.value;
         applyCommissionPaidSelectStyles(e.target.parentNode || document);
-
+       
         apiRun.withSuccessHandler(()=>{
           e.target.disabled = false;
           e.target.classList.remove('updating');
@@ -8595,7 +8622,7 @@ function renderPendingGuidesSimplified() {
         renderVendorProviderBalances([], []);
         if (e && e.message) console.error(e.message);
       })
-      .getVendorProviderBalances(tok, fromISO || '', toISO || '', vendor || '');
+      .getVendorProviderBalances(tok, vendor || '', fromISO || '', toISO || '');
   }
 
   function loadCommissionRequestBalances(vendorEmailOpt, fromISO, toISO, done){
@@ -8620,7 +8647,7 @@ function renderPendingGuidesSimplified() {
         commissionRequestBalancesCache = [];
         if (typeof done === 'function') done([]);
       })
-      .getVendorProviderRequestBalances(tok, fromISO || '', toISO || '', vendor || '');
+      .getVendorProviderRequestBalances(tok, vendor || '', fromISO || '', toISO || '');
   }
 
   function applyCommissionPaidSelectStyles(root){
