@@ -6,6 +6,56 @@ import { hashPassword, requireRole, requireUser, signSession, verifyPassword } f
 
 const APP_BASE_URL = process.env.APP_BASE_URL || '';
 
+
+function formatGs(value) {
+  return Number(value || 0).toLocaleString('es-PY');
+}
+
+function looksLikeISODate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim());
+}
+
+function normalizeVendorBalanceArgs(vendorEmail, fromISO = '', toISO = '', extra = '') {
+  let vendor = String(vendorEmail || '').trim();
+  let from = String(fromISO || '').trim();
+  let to = String(toISO || '').trim();
+  const extraArg = String(extra || '').trim();
+
+  // Compatibilidad con frontend viejo:
+  // getVendorProviderBalances(tok, fromISO, toISO, vendorEmail)
+  if (looksLikeISODate(vendor) && !looksLikeISODate(to) && extraArg) {
+    vendor = extraArg;
+    to = from;
+    from = vendorEmail;
+  } else if (!vendor && extraArg) {
+    vendor = extraArg;
+  }
+
+  return {
+    vendorEmail: norm(vendor),
+    fromISO: from,
+    toISO: to
+  };
+}
+
+async function getClientCityPriceByCity(city) {
+  const cleanCity = String(city || '').trim();
+  if (!cleanCity) return 0;
+  const { data } = await supabase
+    .from('client_city_prices')
+    .select('price_gs')
+    .eq('city', cleanCity)
+    .maybeSingle();
+  return Number(data?.price_gs || 0);
+}
+
+function getGuideOrderCode(order) {
+  const explicitCode = String(order.order_code || order.external_ref || '').trim();
+  if (explicitCode) return explicitCode;
+  const rawId = String(order.id || '').trim();
+  return rawId ? `A${rawId}` : '';
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
   return {
@@ -36,9 +86,9 @@ async function fetchOrder(orderId) {
     items: (data.order_items || []).map((x) => ({
       sku: x.sku,
       title: x.title,
-      qty: x.qty,
-      price_gs: x.price_gs,
-      provider_price_gs: x.provider_price_gs,
+      qty: Number(x.qty || 0),
+      price_gs: Number(x.price_gs || 0),
+      provider_price_gs: Number(x.provider_price_gs || 0),
       provider_email: x.provider_email,
       vendor_email: x.vendor_email
     })),
@@ -374,8 +424,18 @@ async function dispatch(fn, args) {
     async addOrder(token, order) {
       const user = await requireUser(token);
       const totals = calcOrderTotals(order.items || []);
+      if (!totals.items.length) throw new Error('Debes agregar al menos un ítem');
+
       const provider_emails = [...new Set(totals.items.map((x) => norm(x.provider_email)).filter(Boolean))];
-      const vendor_email = norm(order.vendor_email || (user.role === 'VENDEDOR' ? user.email : '')) || null;
+      const vendor_email = norm(
+        order.vendor_email ||
+        (user.role === 'VENDEDOR' ? user.email : '')
+      ) || null;
+
+      const requestedDelivery = Number(order.delivery_fee_gs || 0);
+      const cityDelivery = await getClientCityPriceByCity(order.city);
+      const delivery_fee_gs = requestedDelivery > 0 ? requestedDelivery : cityDelivery;
+
       const row = {
         customer_name: order.customer_name,
         phone: order.phone,
@@ -391,12 +451,15 @@ async function dispatch(fn, args) {
         source_status: order.source_status || '',
         sale_total_gs: totals.sale_total_gs,
         cost_total_gs: totals.cost_total_gs,
+        delivery_fee_gs,
         status: order.status || 'PENDIENTE',
         status2: order.status2 || 'GUIA PENDIENTE',
         created_by: user.email
       };
+
       const { data, error } = await supabase.from('orders').insert(row).select('*').single();
       if (error) throw error;
+
       const itemsRows = totals.items.map((item) => ({
         order_id: data.id,
         sku: item.sku,
@@ -407,9 +470,21 @@ async function dispatch(fn, args) {
         provider_email: item.provider_email || null,
         vendor_email: item.vendor_email || vendor_email
       }));
-      if (itemsRows.length) await supabase.from('order_items').insert(itemsRows).throwOnError();
+      if (itemsRows.length) {
+        await supabase.from('order_items').insert(itemsRows).throwOnError();
+      }
+
       await logNews('ORDER_CREATED', `Pedido #${data.id} creado`, data.id, user.email);
-      return { id: data.id, total_gs: row.sale_total_gs, commission_gs: Math.max(Number(row.sale_total_gs||0) - Number(row.cost_total_gs||0), 0) };
+
+      return {
+        id: data.id,
+        total_gs: row.sale_total_gs,
+        delivery_fee_gs,
+        commission_gs: Math.max(
+          Number(row.sale_total_gs || 0) - Number(row.cost_total_gs || 0) - Number(delivery_fee_gs || 0),
+          0
+        )
+      };
     },
 
     async updateOrder(token, orderId, patch) {
@@ -768,11 +843,18 @@ async function dispatch(fn, args) {
 
     async getVendorProviderBalances(token, vendorEmail, fromISO = '', toISO = '') {
       const user = await requireUser(token);
-      if (user.role === 'VENDEDOR') vendorEmail = user.email;
-      let query = supabase.from('vendor_commissions').select('*').eq('vendor_email', norm(vendorEmail));
-      query = applyRange(query, fromISO, toISO);
+      const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[4]);
+
+      let finalVendorEmail = normalized.vendorEmail;
+      if (user.role === 'VENDEDOR') finalVendorEmail = norm(user.email);
+
+      let query = supabase.from('vendor_commissions').select('*');
+      if (finalVendorEmail) query = query.eq('vendor_email', finalVendorEmail);
+      query = applyRange(query, normalized.fromISO, normalized.toISO);
+
       const { data, error } = await query;
       if (error) throw error;
+
       const grouped = groupBy(data || [], (x) => x.provider_email || 'sin-proveedor');
       return Object.entries(grouped).map(([provider_email, rows]) => ({
         provider_email,
@@ -814,10 +896,18 @@ async function dispatch(fn, args) {
       return data;
     },
 
-    async getVendorProviderRequestBalances(token, vendorEmail) {
+    async getVendorProviderRequestBalances(token, vendorEmail = '', fromISO = '', toISO = '') {
       const user = await requireUser(token);
-      if (user.role === 'VENDEDOR') vendorEmail = user.email;
-      const { data, error } = await supabase.from('commission_requests').select('*').eq('vendor_email', norm(vendorEmail));
+      const normalized = normalizeVendorBalanceArgs(vendorEmail, fromISO, toISO, arguments[4]);
+
+      let finalVendorEmail = normalized.vendorEmail;
+      if (user.role === 'VENDEDOR') finalVendorEmail = norm(user.email);
+
+      let query = supabase.from('commission_requests').select('*');
+      if (finalVendorEmail) query = query.eq('vendor_email', finalVendorEmail);
+      query = applyRange(query, normalized.fromISO, normalized.toISO);
+
+      const { data, error } = await query;
       if (error) throw error;
       const grouped = groupBy(data || [], (x) => x.provider_email || 'sin-proveedor');
       return Object.entries(grouped).map(([provider_email, rows]) => ({
