@@ -56,77 +56,6 @@ function getGuideOrderCode(order) {
   return rawId ? `A${rawId}` : '';
 }
 
-
-function isoDay(value) {
-  const d = value ? new Date(value) : null;
-  if (!d || Number.isNaN(d.getTime())) return '';
-  return d.toISOString().slice(0, 10);
-}
-
-function buildDashboardPayload(rows, providerEmail = '') {
-  const safeRows = Array.isArray(rows) ? rows : [];
-  const cards = {
-    orders: safeRows.length,
-    sold: safeRows.reduce((s, x) => s + Number(x.sale_total_gs || x.total_gs || 0), 0),
-    delivered: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO').length,
-    canceled: safeRows.filter((x) => String(x.status || '').toUpperCase() === 'CANCELADO').length,
-    profit: safeRows.reduce((s, x) => s + Math.max(Number(x.sale_total_gs || x.total_gs || 0) - Number(x.cost_total_gs || 0), 0), 0),
-    delivered_today_profit: 0,
-    delivered_range_profit: 0,
-  };
-  const byDay = {};
-  const pie = {};
-  const topMap = {};
-  const cityMap = {};
-  for (const row of safeRows) {
-    const day = isoDay(row.created_at || row.updated_at || nowIso()) || 'Sin fecha';
-    byDay[day] = (byDay[day] || 0) + Number(row.sale_total_gs || row.total_gs || 0);
-    const st = String(row.status || 'SIN ESTADO').toUpperCase();
-    pie[st] = (pie[st] || 0) + 1;
-    const cityKey = row.city || 'Sin ciudad';
-    cityMap[cityKey] = cityMap[cityKey] || { city: cityKey, qty: 0, revenue: 0 };
-    cityMap[cityKey].qty += 1;
-    cityMap[cityKey].revenue += Number(row.sale_total_gs || row.total_gs || 0);
-    for (const item of (row.items || [])) {
-      const key = item.title || item.sku || 'Sin título';
-      topMap[key] = topMap[key] || { name: key, qty: 0, revenue: 0 };
-      topMap[key].qty += Number(item.qty || 0);
-      topMap[key].revenue += Number(item.qty || 0) * Number(item.price_gs || 0);
-    }
-  }
-  return {
-    cards,
-    series: Object.keys(byDay).sort().map((date) => ({ date, value: byDay[date] })),
-    pie,
-    top: Object.values(topMap).sort((a,b)=>b.qty-a.qty).slice(0,10),
-    map: Object.values(cityMap).sort((a,b)=>b.qty-a.qty),
-    provider_email: providerEmail || ''
-  };
-}
-
-function normalizeListArgs(a = '', b = '', c = '', d = '') {
-  if (a && typeof a === 'object' && !Array.isArray(a)) {
-    return {
-      fromISO: String(a.fromISO || '').trim(),
-      toISO: String(a.toISO || '').trim(),
-      q: String(a.q || '').trim(),
-      providerEmail: norm(a.providerEmail || a.provider_email || ''),
-      tipo: String(a.tipo || '').trim().toUpperCase(),
-      status2: String(a.status || a.status2 || '').trim().toUpperCase(),
-      onlyStatus: String(a.onlyStatus || '').trim().toUpperCase()
-    };
-  }
-  return {
-    fromISO: String(a || '').trim(),
-    toISO: String(b || '').trim(),
-    q: String(c || '').trim(),
-    providerEmail: norm(d || ''),
-    tipo: '',
-    status2: '',
-    onlyStatus: ''
-  };
-}
-
 function sanitizeUser(user) {
   if (!user) return null;
   return {
@@ -596,33 +525,51 @@ async function dispatch(fn, args) {
       return listOrdersBase(user, fromISO, toISO, q);
     },
 
-    async listProviderOrders(token, fromISO, toISO, q) {
+    async listProviderOrders(token, fromISO = '', toISO = '', q = '') {
       const user = await requireUser(token);
-      const filters = normalizeListArgs(fromISO, toISO, q, arguments[4]);
+      const filters = normalizeListArgs(fromISO, toISO, q);
       let rows = await listOrdersBase({ ...user, role: 'PROVEEDOR' }, filters.fromISO, filters.toISO, filters.q, filters.onlyStatus);
-      if (filters.providerEmail) rows = rows.filter((x) => norm(x.provider_email) === filters.providerEmail || String(x.provider_emails_list || '').split(',').map(norm).includes(filters.providerEmail));
-      if (filters.tipo && ['GUIAS PENDIENTES','PENDIENTES'].includes(filters.tipo)) rows = rows.filter((x) => ['GUIA PENDIENTE','', '--'].includes(String(x.status2 || '').toUpperCase()));
-      if (filters.status2 && !['TODOS LOS ESTADOS','TODOS'].includes(filters.status2)) rows = rows.filter((x) => String(x.status2 || '').toUpperCase() === filters.status2);
+      if (filters.providerEmail) {
+        rows = rows.filter((x) => norm(x.provider_email || '') === filters.providerEmail || String(x.provider_emails_list || '').toLowerCase().includes(filters.providerEmail));
+      }
+      if (filters.tipo === 'GUIAS PENDIENTES') {
+        rows = rows.filter((x) => ['GUIA PENDIENTE', '', '--'].includes(String(x.status2 || '').trim().toUpperCase()));
+      } else if (filters.tipo === 'GUIAS GENERADAS') {
+        rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'GUIA GENERADA');
+      }
+      if (filters.status2) {
+        rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === filters.status2);
+      }
       return rows;
     },
 
-    async listDespachanteOrders(token, fromISO, toISO, q) {
+    async listDespachanteOrders(token, fromISO = '', toISO = '', q = '') {
       const user = await requireUser(token);
-      const filters = normalizeListArgs(fromISO, toISO, q, arguments[4]);
+      const filters = normalizeListArgs(fromISO, toISO, q);
       let rows = await listOrdersBase({ ...user, role: 'DESPACHANTE' }, filters.fromISO, filters.toISO, filters.q, filters.onlyStatus);
-      if (filters.providerEmail) rows = rows.filter((x) => norm(x.provider_email) === filters.providerEmail || String(x.provider_emails_list || '').split(',').map(norm).includes(filters.providerEmail));
-      if (filters.tipo && ['GUIAS PENDIENTES','PENDIENTES'].includes(filters.tipo)) rows = rows.filter((x) => ['GUIA PENDIENTE','', '--'].includes(String(x.status2 || '').toUpperCase()));
-      if (filters.status2 && !['TODOS LOS ESTADOS','TODOS'].includes(filters.status2)) rows = rows.filter((x) => String(x.status2 || '').toUpperCase() === filters.status2);
+      if (filters.providerEmail) {
+        rows = rows.filter((x) => norm(x.provider_email || '') === filters.providerEmail || String(x.provider_emails_list || '').toLowerCase().includes(filters.providerEmail));
+      }
+      if (filters.tipo === 'GUIAS PENDIENTES') {
+        rows = rows.filter((x) => ['GUIA PENDIENTE', '', '--'].includes(String(x.status2 || '').trim().toUpperCase()));
+      } else if (filters.tipo === 'GUIAS GENERADAS') {
+        rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'GUIA GENERADA');
+      }
+      if (filters.status2) {
+        rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === filters.status2);
+      }
       return rows;
     },
 
-    async listOrdersForAssignment(token, fromISO, toISO, q) {
+    async listOrdersForAssignment(token, fromISO = '', toISO = '', q = '') {
       const user = await requireUser(token);
       requireRole(user, ['ADMIN', 'DESPACHANTE', 'PROVEEDOR']);
-      const filters = normalizeListArgs(fromISO, toISO, q, arguments[4]);
-      let rows = await listOrdersBase(user, filters.fromISO, filters.toISO, filters.q);
-      if (filters.providerEmail) rows = rows.filter((x) => norm(x.provider_email) === filters.providerEmail || String(x.provider_emails_list || '').split(',').map(norm).includes(filters.providerEmail));
+      const filters = normalizeListArgs(fromISO, toISO, q);
+      let rows = await listOrdersBase(user, filters.fromISO, filters.toISO, filters.q, filters.onlyStatus);
       rows = rows.filter((x) => !x.assigned_delivery && !['CANCELADO', 'RENDIDO'].includes(String(x.status2 || '').toUpperCase()));
+      if (filters.providerEmail) {
+        rows = rows.filter((x) => norm(x.provider_email || '') === filters.providerEmail || String(x.provider_emails_list || '').toLowerCase().includes(filters.providerEmail));
+      }
       return rows;
     },
 
@@ -689,11 +636,13 @@ async function dispatch(fn, args) {
 
     async updateOrderStatus2(token, orderId, status2) {
       const user = await requireUser(token);
-      const nextStatus2 = String(status2 || '').trim().toUpperCase();
-      if (user.role === 'DELIVERY' && nextStatus2 === 'RENDIDO') throw new Error('Delivery no puede marcar RENDIDO');
-      const { data, error } = await supabase.from('orders').update({ status2, updated_at: nowIso() }).eq('id', orderId).select('*').single();
+      const normalizedStatus2 = String(status2 || '').trim().toUpperCase();
+      if (user.role === 'DELIVERY' && normalizedStatus2 === 'RENDIDO') {
+        throw new Error('El delivery no puede marcar pedidos como RENDIDO');
+      }
+      const { data, error } = await supabase.from('orders').update({ status2: normalizedStatus2, updated_at: nowIso() }).eq('id', orderId).select('*').single();
       if (error) throw error;
-      await logNews('ORDER_STATUS2', `Pedido #${orderId} → ${status2}`, orderId, user.email);
+      await logNews('ORDER_STATUS2', `Pedido #${orderId} → ${normalizedStatus2}`, orderId, user.email);
       return data;
     },
 
@@ -898,21 +847,28 @@ async function dispatch(fn, args) {
       if (error) throw error;
       const rows = (data || []).map((x) => {
         const o = x.orders || {};
+        const sale = Number(o.sale_total_gs ?? o.total_gs ?? 0);
+        const fee = Number(o.delivery_fee_gs || 0);
+        const commission = Number(x.amount_gs || Math.max(sale - Number(o.cost_total_gs || 0) - fee, 0));
         return {
           ...x,
           id: x.order_id,
           order_id: x.order_id,
           created_at: o.created_at || x.created_at,
-          customer_name: o.customer_name || '',
           city: o.city || '',
+          customer_name: o.customer_name || '',
+          client_name: o.customer_name || '',
           vendor_email: x.vendor_email || o.vendor_email || '',
+          provider_email: x.provider_email || o.provider_email || '',
+          provider_emails_list: o.provider_emails_list || '',
           assigned_delivery: o.assigned_delivery || '',
-          provider_emails_list: o.provider_emails_list || x.provider_email || '',
-          total_gs: Number(o.sale_total_gs || o.total_gs || 0),
-          commission_gs: Number(x.amount_gs || 0),
-          commission_paid: !!x.paid,
+          total_gs: sale,
+          sale_total_gs: sale,
+          delivery_fee_gs: fee,
+          commission_gs: commission,
+          amount_gs: commission,
           status: o.status || x.order_status || '',
-          status2: o.status2 || ''
+          paid_label: x.paid ? 'PAGADO' : 'PENDIENTE'
         };
       });
       return rows.filter((x) => !q || JSON.stringify(x).toLowerCase().includes(String(q).toLowerCase()));
@@ -926,10 +882,12 @@ async function dispatch(fn, args) {
       return data;
     },
 
-    async getVendorCommissions(token, vendorEmail = '', fromISO = '', toISO = '', only = '', q = '', providerFilter = '') {
+    async getVendorCommissions(token, vendorEmail) {
       const user = await requireUser(token);
-      const finalVendor = user.role === 'VENDEDOR' ? user.email : vendorEmail;
-      return handlers.listCommissionsFlex(token, fromISO, toISO, finalVendor, only, q, providerFilter);
+      if (user.role === 'VENDEDOR') vendorEmail = user.email;
+      const { data, error } = await supabase.from('vendor_commissions').select('*').eq('vendor_email', norm(vendorEmail));
+      if (error) throw error;
+      return data || [];
     },
 
     async getVendorProviderBalances(token, vendorEmail, fromISO = '', toISO = '') {
@@ -958,29 +916,25 @@ async function dispatch(fn, args) {
     async createCommissionRequest(token, payload) {
       const user = await requireUser(token);
       requireRole(user, 'VENDEDOR');
-      const input = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : { provider_email: arguments[1], amount_gs: arguments[2], note: arguments[3] };
       const row = {
         vendor_email: user.email,
-        provider_email: norm(input.provider_email || input.provider || ''),
-        amount_gs: Number(input.amount_gs || input.amount || 0),
-        note: input.note || '',
+        provider_email: norm(payload.provider_email || ''),
+        amount_gs: Number(payload.amount_gs || 0),
+        note: payload.note || '',
         status: 'PENDIENTE'
       };
       const { data, error } = await supabase.from('commission_requests').insert(row).select('*').single();
       if (error) throw error;
-      return { ...data, retained_gs: row.amount_gs, message: 'Solicitud creada', requested_at: data.created_at };
+      return data;
     },
 
-    async listCommissionRequests(token, status = '', vendor = '', provider = '') {
+    async listCommissionRequests(token) {
       const user = await requireUser(token);
       let query = supabase.from('commission_requests').select('*').order('created_at', { ascending: false });
       if (user.role === 'VENDEDOR') query = query.eq('vendor_email', user.email);
-      if (status) query = query.eq('status', String(status).trim().toUpperCase());
-      if (vendor && user.role !== 'VENDEDOR') query = query.eq('vendor_email', norm(vendor));
-      if (provider) query = query.eq('provider_email', norm(provider));
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).map((x) => ({ ...x, requested_at: x.created_at }));
+      return data || [];
     },
 
     async resolveCommissionRequest(token, requestId, status, note = '') {
@@ -1015,22 +969,49 @@ async function dispatch(fn, args) {
 
     async getClosuresDetailedKPIs(token, deliveryEmail = '', fromISO = '', toISO = '') {
       const user = await requireUser(token);
-      let delivery = deliveryEmail, from = fromISO, to = toISO;
-      if (looksLikeISODate(String(deliveryEmail || '')) && arguments[4]) { from = deliveryEmail; to = fromISO; delivery = toISO; }
-      if (user.role === 'DELIVERY') delivery = user.email;
-      let rows = await listOrdersBase(user, from, to, '', '', delivery);
-      if (delivery) rows = rows.filter((x) => norm(x.assigned_delivery) === norm(delivery));
-      const entregadosRows = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO');
-      const encomRows = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENCOMIENDA ENTREGADA');
-      const fee = entregadosRows.reduce((s,x)=>s + Number(x.delivery_fee_gs || 0), 0);
-      const revenue = entregadosRows.reduce((s,x)=>s + Number(x.total_gs || x.sale_total_gs || 0), 0);
-      const net = entregadosRows.reduce((s,x)=>s + (Number(x.total_gs || x.sale_total_gs || 0) - Number(x.delivery_fee_gs || 0)), 0);
-      const today = isoDay(nowIso());
-      const todayAssigned = rows.filter((x) => isoDay(x.assigned_at || x.created_at) === today).length;
+
+      // Compatibilidad con frontend que llama (token, fromISO, toISO, deliveryEmail)
+      if (looksLikeISODate(deliveryEmail) && !looksLikeISODate(toISO)) {
+        const oldFrom = String(deliveryEmail || '').trim();
+        const oldTo = String(fromISO || '').trim();
+        const oldDelivery = String(toISO || '').trim();
+        deliveryEmail = oldDelivery;
+        fromISO = oldFrom;
+        toISO = oldTo;
+      }
+
+      const selectedDelivery = user.role === 'DELIVERY' ? norm(user.email) : norm(deliveryEmail);
+      let rows = await listOrdersBase({ ...user, role: user.role === 'DELIVERY' ? 'DELIVERY' : user.role }, fromISO, toISO, '');
+      if (selectedDelivery) {
+        rows = rows.filter((x) => norm(x.assigned_delivery || '') === selectedDelivery);
+      }
+
+      const entregadosRows = rows.filter((x) => String(x.status || '').trim().toUpperCase() === 'ENTREGADO');
+      const encomiendaRows = rows.filter((x) => String(x.status || '').trim().toUpperCase() === 'ENCOMIENDA ENTREGADA');
+
+      const entregadosRevenue = entregadosRows.reduce((s, x) => s + Number(x.sale_total_gs ?? x.total_gs ?? 0), 0);
+      const entregadosFee = entregadosRows.reduce((s, x) => s + Number(x.delivery_fee_gs || 0), 0);
+      const encomiendaRevenue = encomiendaRows.reduce((s, x) => s + Number(x.sale_total_gs ?? x.total_gs ?? 0), 0);
+
+      const fromDay = String(fromISO || '').trim();
+      const assignedToday = rows.filter((x) => {
+        const d = isoDay(x.assigned_at || x.created_at);
+        if (!d) return false;
+        return fromDay ? d === fromDay : d === isoDay(nowIso());
+      }).length;
+
       return {
-        entregados: { count: entregadosRows.length, revenue, delivery_fee: fee, net },
-        encomiendas: { count: encomRows.length, revenue: encomRows.reduce((s,x)=>s + Number(x.total_gs || x.sale_total_gs || 0), 0) },
-        today_assigned: todayAssigned,
+        entregados: {
+          count: entregadosRows.length,
+          revenue: entregadosRevenue,
+          delivery_fee: entregadosFee,
+          net: Math.max(entregadosRevenue - entregadosFee, 0)
+        },
+        encomiendas: {
+          count: encomiendaRows.length,
+          revenue: encomiendaRevenue
+        },
+        today_assigned: assignedToday,
         rows
       };
     },
@@ -1206,7 +1187,7 @@ async function dispatch(fn, args) {
       const user = await requireUser(token);
       const visible = await handlers.listProducts(token);
       const { count } = await supabase.from('products').select('*', { count: 'exact', head: true });
-      return { count, visibleCount: Array.isArray(visible) ? visible.length : 0, productosProveedor: Array.isArray(visible) ? visible : [], user: { email: user.email, role: user.role } };
+      return { count, visibleCount: Array.isArray(visible) ? visible.length : 0, user: { email: user.email, role: user.role } };
     },
 
     async debugProviderData(token) {
