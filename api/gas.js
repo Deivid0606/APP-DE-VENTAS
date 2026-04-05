@@ -99,7 +99,7 @@ function buildDashboardPayload(rows, providerEmail = '') {
     series: Object.keys(byDay).sort().map((date) => ({ date, value: byDay[date] })),
     pie,
     top: Object.values(topMap).sort((a,b)=>b.qty-a.qty).slice(0,10),
-    map: Object.values(cityMap),
+    map: Object.values(cityMap).sort((a,b)=>b.qty-a.qty),
     provider_email: providerEmail || ''
   };
 }
@@ -116,18 +116,15 @@ function normalizeListArgs(a = '', b = '', c = '', d = '') {
       onlyStatus: String(a.onlyStatus || '').trim().toUpperCase()
     };
   }
-  return { fromISO: String(a||'').trim(), toISO: String(b||'').trim(), q: String(c||'').trim(), providerEmail: norm(d||''), tipo: '', status2: '', onlyStatus: '' };
-}
-
-function normalizeClosureArgs(deliveryEmail = '', fromISO = '', toISO = '') {
-  let delivery = String(deliveryEmail || '').trim();
-  let from = String(fromISO || '').trim();
-  let to = String(toISO || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(delivery) && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
-    const realDelivery = String(arguments.length > 3 ? (arguments[3] || '') : '').trim();
-    return { deliveryEmail: norm(realDelivery), fromISO: delivery, toISO: from };
-  }
-  return { deliveryEmail: norm(delivery), fromISO: from, toISO: to };
+  return {
+    fromISO: String(a || '').trim(),
+    toISO: String(b || '').trim(),
+    q: String(c || '').trim(),
+    providerEmail: norm(d || ''),
+    tipo: '',
+    status2: '',
+    onlyStatus: ''
+  };
 }
 
 function sanitizeUser(user) {
@@ -601,31 +598,31 @@ async function dispatch(fn, args) {
 
     async listProviderOrders(token, fromISO, toISO, q) {
       const user = await requireUser(token);
-      const f = normalizeListArgs(fromISO, toISO, q, arguments[4]);
-      let rows = await listOrdersBase({ ...user, role: 'PROVEEDOR' }, f.fromISO, f.toISO, f.q, f.onlyStatus);
-      if (f.providerEmail) rows = rows.filter((x) => norm(x.provider_email || '').includes(f.providerEmail) || String(x.provider_emails_list || '').toLowerCase().includes(f.providerEmail));
-      if (f.status2) rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === f.status2);
+      const filters = normalizeListArgs(fromISO, toISO, q, arguments[4]);
+      let rows = await listOrdersBase({ ...user, role: 'PROVEEDOR' }, filters.fromISO, filters.toISO, filters.q, filters.onlyStatus);
+      if (filters.providerEmail) rows = rows.filter((x) => norm(x.provider_email) === filters.providerEmail || String(x.provider_emails_list || '').split(',').map(norm).includes(filters.providerEmail));
+      if (filters.tipo && ['GUIAS PENDIENTES','PENDIENTES'].includes(filters.tipo)) rows = rows.filter((x) => ['GUIA PENDIENTE','', '--'].includes(String(x.status2 || '').toUpperCase()));
+      if (filters.status2 && !['TODOS LOS ESTADOS','TODOS'].includes(filters.status2)) rows = rows.filter((x) => String(x.status2 || '').toUpperCase() === filters.status2);
       return rows;
     },
 
     async listDespachanteOrders(token, fromISO, toISO, q) {
       const user = await requireUser(token);
-      const f = normalizeListArgs(fromISO, toISO, q, arguments[4]);
-      let rows = await listOrdersBase({ ...user, role: 'DESPACHANTE' }, f.fromISO, f.toISO, f.q, f.onlyStatus);
-      if (f.providerEmail) rows = rows.filter((x) => norm(x.provider_email || '').includes(f.providerEmail) || String(x.provider_emails_list || '').toLowerCase().includes(f.providerEmail));
-      if (f.tipo === 'PENDIENTES') rows = rows.filter((x) => ['GUIA PENDIENTE', '', '--'].includes(String(x.status2 || '').trim().toUpperCase()));
-      if (f.tipo === 'GENERADAS') rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === 'GUIA GENERADA');
-      if (f.status2) rows = rows.filter((x) => String(x.status2 || '').trim().toUpperCase() === f.status2);
+      const filters = normalizeListArgs(fromISO, toISO, q, arguments[4]);
+      let rows = await listOrdersBase({ ...user, role: 'DESPACHANTE' }, filters.fromISO, filters.toISO, filters.q, filters.onlyStatus);
+      if (filters.providerEmail) rows = rows.filter((x) => norm(x.provider_email) === filters.providerEmail || String(x.provider_emails_list || '').split(',').map(norm).includes(filters.providerEmail));
+      if (filters.tipo && ['GUIAS PENDIENTES','PENDIENTES'].includes(filters.tipo)) rows = rows.filter((x) => ['GUIA PENDIENTE','', '--'].includes(String(x.status2 || '').toUpperCase()));
+      if (filters.status2 && !['TODOS LOS ESTADOS','TODOS'].includes(filters.status2)) rows = rows.filter((x) => String(x.status2 || '').toUpperCase() === filters.status2);
       return rows;
     },
 
     async listOrdersForAssignment(token, fromISO, toISO, q) {
       const user = await requireUser(token);
       requireRole(user, ['ADMIN', 'DESPACHANTE', 'PROVEEDOR']);
-      const f = normalizeListArgs(fromISO, toISO, q, arguments[4]);
-      let rows = await listOrdersBase(user, f.fromISO, f.toISO, f.q);
+      const filters = normalizeListArgs(fromISO, toISO, q, arguments[4]);
+      let rows = await listOrdersBase(user, filters.fromISO, filters.toISO, filters.q);
+      if (filters.providerEmail) rows = rows.filter((x) => norm(x.provider_email) === filters.providerEmail || String(x.provider_emails_list || '').split(',').map(norm).includes(filters.providerEmail));
       rows = rows.filter((x) => !x.assigned_delivery && !['CANCELADO', 'RENDIDO'].includes(String(x.status2 || '').toUpperCase()));
-      if (f.providerEmail) rows = rows.filter((x) => norm(x.provider_email || '').includes(f.providerEmail) || String(x.provider_emails_list || '').toLowerCase().includes(f.providerEmail));
       return rows;
     },
 
@@ -692,7 +689,9 @@ async function dispatch(fn, args) {
 
     async updateOrderStatus2(token, orderId, status2) {
       const user = await requireUser(token);
-      if (user.role === 'DELIVERY' && String(status2 || '').trim().toUpperCase() === 'RENDIDO') throw new Error('DELIVERY no puede marcar RENDIDO');
+      if (user.role === 'DELIVERY' && String(status2 || '').toUpperCase() === 'RENDIDO') {
+        throw new Error('El repartidor no puede marcar RENDIDO');
+      }
       const { data, error } = await supabase.from('orders').update({ status2, updated_at: nowIso() }).eq('id', orderId).select('*').single();
       if (error) throw error;
       await logNews('ORDER_STATUS2', `Pedido #${orderId} → ${status2}`, orderId, user.email);
@@ -898,7 +897,26 @@ async function dispatch(fn, args) {
       if (only === 'PENDIENTE') query = query.eq('paid', false);
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).filter((x) => !q || JSON.stringify(x).toLowerCase().includes(String(q).toLowerCase()));
+      const rows = (data || []).map((x) => {
+        const o = x.orders || {};
+        return {
+          ...x,
+          id: x.order_id,
+          order_id: x.order_id,
+          created_at: o.created_at || x.created_at,
+          customer_name: o.customer_name || '',
+          city: o.city || '',
+          vendor_email: x.vendor_email || o.vendor_email || '',
+          assigned_delivery: o.assigned_delivery || '',
+          provider_emails_list: o.provider_emails_list || x.provider_email || '',
+          total_gs: Number(o.sale_total_gs || o.total_gs || 0),
+          commission_gs: Number(x.amount_gs || 0),
+          commission_paid: !!x.paid,
+          status: o.status || x.order_status || '',
+          status2: o.status2 || ''
+        };
+      });
+      return rows.filter((x) => !q || JSON.stringify(x).toLowerCase().includes(String(q).toLowerCase()));
     },
 
     async payVendorCommission(token, orderId, paid) {
@@ -909,12 +927,10 @@ async function dispatch(fn, args) {
       return data;
     },
 
-    async getVendorCommissions(token, vendorEmail) {
+    async getVendorCommissions(token, vendorEmail = '', fromISO = '', toISO = '', only = '', q = '', providerFilter = '') {
       const user = await requireUser(token);
-      if (user.role === 'VENDEDOR') vendorEmail = user.email;
-      const { data, error } = await supabase.from('vendor_commissions').select('*').eq('vendor_email', norm(vendorEmail));
-      if (error) throw error;
-      return data || [];
+      const finalVendor = user.role === 'VENDEDOR' ? user.email : vendorEmail;
+      return handlers.listCommissionsFlex(token, fromISO, toISO, finalVendor, only, q, providerFilter);
     },
 
     async getVendorProviderBalances(token, vendorEmail, fromISO = '', toISO = '') {
@@ -943,43 +959,34 @@ async function dispatch(fn, args) {
     async createCommissionRequest(token, payload) {
       const user = await requireUser(token);
       requireRole(user, 'VENDEDOR');
-      if (payload && typeof payload !== 'object') {
-        payload = {
-          provider_email: arguments[1],
-          amount_gs: arguments[2],
-          note: arguments[3],
-          range_from: arguments[4],
-          range_to: arguments[5]
-        };
-      }
+      const input = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : { provider_email: arguments[1], amount_gs: arguments[2], note: arguments[3] };
       const row = {
         vendor_email: user.email,
-        provider_email: norm(payload.provider_email || ''),
-        amount_gs: Number(payload.amount_gs || 0),
-        note: payload.note || '',
-        range_from: payload.range_from || '',
-        range_to: payload.range_to || '',
-        requested_at: nowIso(),
+        provider_email: norm(input.provider_email || input.provider || ''),
+        amount_gs: Number(input.amount_gs || input.amount || 0),
+        note: input.note || '',
         status: 'PENDIENTE'
       };
       const { data, error } = await supabase.from('commission_requests').insert(row).select('*').single();
       if (error) throw error;
-      return data;
+      return { ...data, retained_gs: row.amount_gs, message: 'Solicitud creada', requested_at: data.created_at };
     },
 
-    async listCommissionRequests(token) {
+    async listCommissionRequests(token, status = '', vendor = '', provider = '') {
       const user = await requireUser(token);
-      const status = String(arguments[1] || '').trim().toUpperCase();
-      const vendor = norm(arguments[2] || '');
-      const provider = norm(arguments[3] || '');
       let query = supabase.from('commission_requests').select('*').order('created_at', { ascending: false });
       if (user.role === 'VENDEDOR') query = query.eq('vendor_email', user.email);
-      if (status) query = query.eq('status', status);
-      if (vendor && user.role !== 'VENDEDOR') query = query.eq('vendor_email', vendor);
-      if (provider) query = query.eq('provider_email', provider);
+      if (status) query = query.eq('status', String(status).trim().toUpperCase());
+      if (vendor && user.role !== 'VENDEDOR') query = query.eq('vendor_email', norm(vendor));
+      if (provider) query = query.eq('provider_email', norm(provider));
       const { data, error } = await query;
       if (error) throw error;
-      return data || [];
+      return (data || []).map((r) => ({
+        ...r,
+        requested_at: r.created_at,
+        approved_by: r.status === 'APROBADO' ? 'Aprobado' : '',
+        rejected_by: r.status === 'RECHAZADO' ? 'Rechazado' : ''
+      }));
     },
 
     async resolveCommissionRequest(token, requestId, status, note = '') {
@@ -1014,21 +1021,28 @@ async function dispatch(fn, args) {
 
     async getClosuresDetailedKPIs(token, deliveryEmail = '', fromISO = '', toISO = '') {
       const user = await requireUser(token);
-      const args = normalizeClosureArgs(deliveryEmail, fromISO, toISO, arguments[4]);
-      let finalDelivery = args.deliveryEmail;
-      if (user.role === 'DELIVERY') finalDelivery = norm(user.email);
-      let rows = await listOrdersBase(user, args.fromISO, args.toISO, '', '', finalDelivery);
-      if (finalDelivery) rows = rows.filter((x) => norm(x.assigned_delivery || '') === finalDelivery);
-      const delivered = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO');
-      const encomiendas = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENCOMIENDA ENTREGADA');
-      const revenue = delivered.reduce((s, x) => s + Number(x.sale_total_gs || x.total_gs || 0), 0);
-      const deliveryFee = delivered.reduce((s, x) => s + Number(x.delivery_fee_gs || 0), 0);
-      const net = delivered.reduce((s, x) => s + Math.max(Number(x.sale_total_gs || x.total_gs || 0) - Number(x.delivery_fee_gs || 0), 0), 0);
-      const today = isoDay(nowIso());
-      const todayAssigned = rows.filter((x) => isoDay(x.assigned_at || x.created_at) === today).length;
+      let delivery = String(deliveryEmail || '').trim();
+      let from = fromISO;
+      let to = toISO;
+      if (looksLikeISODate(delivery) && arguments[4]) {
+        from = deliveryEmail;
+        to = fromISO;
+        delivery = String(toISO || '').trim();
+      }
+      if (user.role === 'DELIVERY') delivery = user.email;
+      let rows = await listOrdersBase(user, from, to, '', '', delivery);
+      const deliveryNorm = norm(delivery);
+      if (deliveryNorm) rows = rows.filter((x) => norm(x.assigned_delivery) === deliveryNorm);
+      const entregadosRows = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENTREGADO');
+      const encomRows = rows.filter((x) => String(x.status || '').toUpperCase() === 'ENCOMIENDA ENTREGADA');
+      const revenue = entregadosRows.reduce((s, x) => s + Number(x.total_gs || x.sale_total_gs || 0), 0);
+      const delivery_fee = entregadosRows.reduce((s, x) => s + Number(x.delivery_fee_gs || 0), 0);
+      const net = revenue - delivery_fee;
+      const encomRevenue = encomRows.reduce((s, x) => s + Number(x.total_gs || x.sale_total_gs || 0), 0);
+      const todayAssigned = rows.filter((x) => isoDay(x.assigned_at || x.created_at) === isoDay(nowIso())).length;
       return {
-        entregados: { count: delivered.length, revenue, delivery_fee: deliveryFee, net },
-        encomiendas: { count: encomiendas.length, revenue: encomiendas.reduce((s, x) => s + Number(x.sale_total_gs || x.total_gs || 0), 0) },
+        entregados: { count: entregadosRows.length, revenue, delivery_fee, net },
+        encomiendas: { count: encomRows.length, revenue: encomRevenue },
         today_assigned: todayAssigned,
         rows
       };
@@ -1205,7 +1219,7 @@ async function dispatch(fn, args) {
       const user = await requireUser(token);
       const visible = await handlers.listProducts(token);
       const { count } = await supabase.from('products').select('*', { count: 'exact', head: true });
-      return { count, visibleCount: Array.isArray(visible) ? visible.length : 0, user: { email: user.email, role: user.role } };
+      return { count, visibleCount: Array.isArray(visible) ? visible.length : 0, productosProveedor: Array.isArray(visible) ? visible : [], user: { email: user.email, role: user.role } };
     },
 
     async debugProviderData(token) {
