@@ -3061,6 +3061,7 @@
     show('commissions');
     const pcOnly = document.getElementById('pc_only');
     if (pcOnly && !pcOnly.value) pcOnly.value = 'PENDIENTE';
+    if (typeof hydrateRoleDependentFilters === 'function') { try { hydrateRoleDependentFilters(); } catch(_e){} }
     if (me?.role === 'VENDEDOR') loadCommissionsForVendor();
     else loadCommissions();
   }
@@ -3124,10 +3125,6 @@
     if (name !== 'chat') stopChatPolling();
     if (name !== 'mapa') stopMapPolling();
     try { onShowView(name); } catch(_e) {}
-    try { if (name === 'products') loadCatalog && loadCatalog(true); } catch(_e) {}
-    try { if (name === 'commissions') { if (me?.role === 'VENDEDOR') loadCommissionsForVendor && loadCommissionsForVendor(); else loadCommissions && loadCommissions(); } } catch(_e) {}
-    try { if (name === 'commissionRequests') loadCommissionRequests && loadCommissionRequests(); } catch(_e) {}
-    try { if (name === 'closures') loadClosures && loadClosures(); } catch(_e) {}
   };
 
   // sello de última actualización
@@ -3391,7 +3388,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
       scheduleAutoRefresh();
      
       // === CORRECCIÓN CRÍTICA: PROVEEDOR también necesita ver repartidores ===
-      if (me.role==='ADMIN' || me.role==='PROVEEDOR'){
+      if (me.role==='ADMIN' || me.role==='PROVEEDOR' || me.role==='DESPACHANTE'){
         apiRun.withSuccessHandler(ds=>{
           const sel = document.getElementById('cl_delivery');
           const asSel = document.getElementById('as_delivery'); // NUEVO: selector para asignación masiva
@@ -3454,14 +3451,6 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
       markUpdated();
       show(me.role==='DELIVERY' ? 'closures' : 'dashboard');
-
-setTimeout(() => {
-  try { hydrateRoleDependentFilters && hydrateRoleDependentFilters(); } catch(_e){}
-  try { loadCatalog && loadCatalog(true); } catch(_e){}
-  try { if (me?.role === 'VENDEDOR') { loadCommissionsForVendor && loadCommissionsForVendor(); } else if (me?.role === 'ADMIN' || me?.role === 'PROVEEDOR') { loadCommissions && loadCommissions(); } } catch(_e){}
-  try { loadCommissionRequests && loadCommissionRequests(); } catch(_e){}
-  try { if (me?.role === 'DELIVERY' || me?.role === 'ADMIN' || me?.role === 'PROVEEDOR') { loadClosures && loadClosures(); } } catch(_e){}
-}, 300);
 
       const b=document.getElementById('btnAddProduct');
       // === MODIFICADO: PROVEEDOR también puede agregar productos ===
@@ -3582,6 +3571,7 @@ setTimeout(() => {
           if (commSelect) commSelect.innerHTML = options;
         }
        
+
       })
       .withFailureHandler(e => {
         console.error('Error cargando proveedores:', e);
@@ -5435,14 +5425,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         kpi_provider_range_profit.textContent = nf(res.cards.delivered_range_profit || 0);
         updateProviderLiquidityKPI();
 
-        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
+        const series = Array.isArray(res?.series) ? res.series : [];
+        const labels=series.map(s=>s.date), values=series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        const pie=(res && typeof res.pie==='object' && !Array.isArray(res.pie)) ? res.pie : {};
+        const pl=Object.keys(pie), pv=pl.map(k=>pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5487,14 +5479,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           kpi_profit.textContent = nf(res.cards.profit);
         }
 
-        const labels=res.series.map(s=>s.date), values=res.series.map(s=>s.value);
+        const series = Array.isArray(res?.series) ? res.series : [];
+        const labels=series.map(s=>s.date), values=series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const pl=Object.keys(res.pie), pv=pl.map(k=>res.pie[k]);
+        const pie=(res && typeof res.pie==='object' && !Array.isArray(res.pie)) ? res.pie : {};
+        const pl=Object.keys(pie), pv=pl.map(k=>pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5751,18 +5745,24 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
   // ===== NUEVA FUNCIÓN: Cargar comisiones para VENDEDOR ===
   function loadCommissionsForVendor() {
     const tok = localStorage.getItem(tokenKey);
-    if (!tok) return;
-
+   
+    // Si es VENDEDOR, usar su email automáticamente
     if (me?.role === 'VENDEDOR') {
       document.getElementById('vendor_email_box').classList.remove('hidden');
       document.getElementById('vendor_email_admin_box').classList.add('hidden');
+     
       const vendorEmail = me.email;
       document.getElementById('pc_vendor').value = vendorEmail;
+     
+      // Cambiar título
       document.getElementById('commissions_title').textContent = '💰 Mis Comisiones';
+     
+      // Cargar comisiones específicas del vendedor
       const f = document.getElementById('pc_from')?.value || '';
       const t = document.getElementById('pc_to')?.value || '';
       const only = document.getElementById('pc_only')?.value || '';
       const q = (document.getElementById('pc_q')?.value || '').trim();
+     
       const providerFilter = document.getElementById('comm_filter_provider')?.value || '';
       const onlyNormalized = only || 'PENDIENTE';
       const requestBtn = document.getElementById('btnOpenCommissionRequest');
@@ -5773,10 +5773,19 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
       loadCommissionRequestBalances(vendorEmail, f, t);
 
       apiRun
-        .withSuccessHandler(rows => renderCommissionsTable(rows || []))
+        .withSuccessHandler(rows => {
+          let visibles = rows || [];
+          if (providerFilter) {
+            visibles = visibles.filter(o => String(o.provider_emails_list || '').split(',').map(x=>x.trim()).includes(providerFilter));
+          }
+          if (onlyNormalized === 'PENDIENTE') visibles = visibles.filter(o => !o.commission_paid);
+          if (onlyNormalized === 'PAGADO') visibles = visibles.filter(o => !!o.commission_paid);
+          renderCommissionsTable(visibles);
+        })
         .withFailureHandler(e => toast(e.message || e))
         .listCommissionsFlex(tok, f, t, vendorEmail, onlyNormalized, q, providerFilter);
     } else {
+      // ADMIN/PROVEEDOR - comportamiento normal
       document.getElementById('vendor_email_box').classList.add('hidden');
       document.getElementById('vendor_email_admin_box').classList.remove('hidden');
       document.getElementById('commissions_title').textContent = '💰 Pago de comisiones';
@@ -6146,7 +6155,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         document.getElementById('cl_k_assigned_today').textContent = nf(result.today_assigned);
       })
       .withFailureHandler(e => toast(e.message || e))
-      .getClosuresDetailedKPIs(tok, d, f, t);
+      .getClosuresDetailedKPIs(tok, f, t, d);
   }
 
   function loadClosures(){
@@ -6842,22 +6851,12 @@ function renderPendingGuidesSimplified() {
   // =========================
   // NUEVAS FUNCIONES DE DEBUG PARA PROVEEDOR
   // =========================
-  
-function debugProducts(){
+  function debugProducts(){
     const tok = localStorage.getItem(tokenKey);
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        const total = Number(result.totalProductos || result.count || 0);
-        const proveedor = Array.isArray(result.productosProveedor) ? result.productosProveedor.length : 0;
-        const pub = Array.isArray(result.productosPublicos) ? result.productosPublicos.length : 0;
-        const priv = Array.isArray(result.productosPrivados) ? result.productosPrivados.length : 0;
-        alert(`DEBUG PRODUCTOS:
-
-Total productos: ${total}
-Productos del proveedor: ${proveedor}
-Productos públicos: ${pub}
-Productos privados: ${priv}`);
+        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${(Array.isArray(result.productosProveedor)?result.productosProveedor.length:0)}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
@@ -6866,13 +6865,12 @@ Productos privados: ${priv}`);
       .debugProducts(tok);
   }
 
-
   function debugProviderData(){
     const tok = localStorage.getItem(tokenKey);
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PROVEEDOR:', result);
-        const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${result.productosProveedor.length}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
+        const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${(Array.isArray(result.productosProveedor)?result.productosProveedor.length:0)}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
         alert(msg);
       })
       .withFailureHandler(e => {
@@ -6991,8 +6989,12 @@ Productos privados: ${priv}`);
             e.target.classList.add('success-flash');
             setTimeout(() => e.target.classList.remove('success-flash'), 800);
            
-            toast('Estado 2 actualizado ✓');
+            // Actualizar el objeto en memoria
+            const idx = (rows||[]).findIndex(o => String(o.id) === String(id));
+            if (idx >= 0) { rows[idx].status2 = val; }
+           
             renderPendingGuidesSimplified();
+            toast('Estado 2 actualizado ✓');
           })
           .withFailureHandler(err => {
             e.target.disabled = false;
@@ -8837,20 +8839,26 @@ Productos privados: ${priv}`);
   }
 
   function addRendidoButtonsToClosures(){
-    if (me?.role === 'DELIVERY') return;
-    const rows = Array.from(document.querySelectorAll('#tblClosures tbody tr'));
-    rows.forEach(tr=>{
-      const targetCell = tr.querySelector('td:last-child');
-      if (!targetCell || targetCell.querySelector('.closure-rendido-btn')) return;
-      const id = tr.dataset.id || '';
-      if (!id) return;
+    const rows = document.querySelectorAll('#cl_tbody tr');
+    rows.forEach(tr => {
+      const cells = tr.querySelectorAll('td');
+      if (!cells || cells.length < 10) return;
+      const id = (cells[1]?.textContent || '').trim();
+      const status1 = (cells[7]?.innerText || '').trim().toUpperCase();
+      const targetCell = cells[9];
+      if (!targetCell || !id) return;
+      if (targetCell.querySelector('.closure-rendido-btn')) return;
+      const s2Text = (targetCell.innerText || '').toUpperCase();
+      const canRendir = (status1 === 'ENTREGADO' || status1 === 'ENCOMIENDA ENTREGADA') && s2Text.indexOf('RENDIDO') < 0;
       const btn = document.createElement('button');
       btn.className = 'btn small closure-rendido-btn';
       btn.style.marginTop = '8px';
-      btn.textContent = 'Marcar RENDIDO';
+      btn.textContent = canRendir ? 'Marcar RENDIDO' : 'RENDIDO';
+      btn.disabled = !canRendir;
       btn.onclick = function(){
         const tok = localStorage.getItem(tokenKey);
-        apiRun.withSuccessHandler(()=>{ toast('Estado cambiado a RENDIDO'); loadClosures(); })
+        apiRun
+          .withSuccessHandler(()=>{ toast('Estado cambiado a RENDIDO'); loadClosures(); })
           .withFailureHandler(e=>toast(e.message || e))
           .updateOrderStatus2(tok, id, 'RENDIDO');
       };
@@ -8858,7 +8866,6 @@ Productos privados: ${priv}`);
     });
   }
 
-  // wrappers eliminados para evitar recursión y filtros inestables
 
   // Autoinicio
   (function boot(){
@@ -9102,22 +9109,6 @@ Productos privados: ${priv}`);
       runSafe(()=>loadProvidersForRequestFilters && loadProvidersForRequestFilters());
     }
     loadDeliveryUsersIntoSelectors();
-  }
-
-  const _oldOpenCommissionsView = window.openCommissionsView;
-  if (typeof _oldOpenCommissionsView === 'function') {
-    window.openCommissionsView = function(){
-      const ret = _oldOpenCommissionsView.apply(this, arguments);
-      setTimeout(() => {
-        runSafe(()=>hydrateRoleDependentFilters());
-        runSafe(()=>loadVendorProviderBalances && loadVendorProviderBalances(
-          typeof getCurrentVendorForCommissionBalances === 'function' ? getCurrentVendorForCommissionBalances() : '',
-          byId('pc_from')?.value || '',
-          byId('pc_to')?.value || ''
-        ));
-      }, 150);
-      return ret;
-    };
   }
 
   document.addEventListener('DOMContentLoaded', function(){
