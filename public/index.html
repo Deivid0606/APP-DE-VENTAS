@@ -3061,6 +3061,7 @@
     show('commissions');
     const pcOnly = document.getElementById('pc_only');
     if (pcOnly && !pcOnly.value) pcOnly.value = 'PENDIENTE';
+    if (typeof hydrateRoleDependentFilters === 'function') { try { hydrateRoleDependentFilters(); } catch(_e){} }
     if (me?.role === 'VENDEDOR') loadCommissionsForVendor();
     else loadCommissions();
   }
@@ -3450,6 +3451,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
 
       markUpdated();
       show(me.role==='DELIVERY' ? 'closures' : 'dashboard');
+      if (me.role==='DELIVERY') loadClosures(); else refreshDashboard();
 
       const b=document.getElementById('btnAddProduct');
       // === MODIFICADO: PROVEEDOR también puede agregar productos ===
@@ -3570,7 +3572,7 @@ vis('navProd', isAuthed && role!=='DELIVERY');
           if (commSelect) commSelect.innerHTML = options;
         }
        
-        toast('✅ Filtros de proveedor cargados');
+
       })
       .withFailureHandler(e => {
         console.error('Error cargando proveedores:', e);
@@ -5415,7 +5417,6 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     if (me?.role === 'PROVEEDOR') {
       loadProviderAdSpend();
       apiRun.withSuccessHandler(res=>{
-        res = res || { cards:{orders:0,sold:0,delivered:0,canceled:0,profit:0,delivered_today_profit:0,delivered_range_profit:0}, series:[], pie:{}, top:[], map:[] };
         kpi_provider_orders.textContent = nf(res.cards.orders);
         kpi_provider_sold.textContent = nf(res.cards.sold);
         kpi_provider_delivered.textContent = nf(res.cards.delivered);
@@ -5425,16 +5426,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
         kpi_provider_range_profit.textContent = nf(res.cards.delivered_range_profit || 0);
         updateProviderLiquidityKPI();
 
-        const __series = Array.isArray(res?.series) ? res.series : [];
-        const labels=__series.map(s=>s.date), values=__series.map(s=>s.value);
+        const series = Array.isArray(res?.series) ? res.series : [];
+        const labels=series.map(s=>s.date), values=series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const __pie = (res && typeof res.pie === 'object' && res.pie) ? res.pie : {};
-        const pl=Object.keys(__pie), pv=pl.map(k=>__pie[k]);
+        const pie=(res && typeof res.pie==='object' && !Array.isArray(res.pie)) ? res.pie : {};
+        const pl=Object.keys(pie), pv=pl.map(k=>pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5450,7 +5451,6 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
     } else {
       // Métricas normales para otros roles
       apiRun.withSuccessHandler(res=>{
-        res = res || { cards:{orders:0,sold:0,delivered:0,canceled:0,profit:0}, series:[], pie:{}, top:[], map:[] };
         kpi_orders.textContent=nf(res.cards.orders);
         kpi_sold.textContent=nf(res.cards.sold);
         kpi_delivered.textContent=nf(res.cards.delivered);
@@ -5480,16 +5480,16 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           kpi_profit.textContent = nf(res.cards.profit);
         }
 
-        const __series = Array.isArray(res?.series) ? res.series : [];
-        const labels=__series.map(s=>s.date), values=__series.map(s=>s.value);
+        const series = Array.isArray(res?.series) ? res.series : [];
+        const labels=series.map(s=>s.date), values=series.map(s=>s.value);
         if (CHART_BARS) CHART_BARS.destroy();
         CHART_BARS=new Chart(document.getElementById('chartBars').getContext('2d'),{
           type:'bar', data:{labels, datasets:[{label:'Ventas por día (Gs)', data:values}]},
           options:{responsive:true, maintainAspectRatio:false}
         });
 
-        const __pie = (res && typeof res.pie === 'object' && res.pie) ? res.pie : {};
-        const pl=Object.keys(__pie), pv=pl.map(k=>__pie[k]);
+        const pie=(res && typeof res.pie==='object' && !Array.isArray(res.pie)) ? res.pie : {};
+        const pl=Object.keys(pie), pv=pl.map(k=>pie[k]);
         if (CHART_PIE) CHART_PIE.destroy();
         CHART_PIE=new Chart(document.getElementById('chartPie').getContext('2d'),{
           type:'pie', data:{labels:pl, datasets:[{data:pv}]}, options:{responsive:true, maintainAspectRatio:false}
@@ -5784,7 +5784,7 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
           renderCommissionsTable(visibles);
         })
         .withFailureHandler(e => toast(e.message || e))
-        .getVendorCommissions(tok, f, t, onlyNormalized, q);
+        .listCommissionsFlex(tok, f, t, vendorEmail, onlyNormalized, q, providerFilter);
     } else {
       // ADMIN/PROVEEDOR - comportamiento normal
       document.getElementById('vendor_email_box').classList.add('hidden');
@@ -6144,7 +6144,6 @@ Quiero coordinar la entrega de su pedido. Estos son los detalles:`;
    
     apiRun
       .withSuccessHandler(result => {
-        result = result || { entregados:{count:0,revenue:0,delivery_fee:0,net:0}, encomiendas:{count:0,revenue:0}, today_assigned:0 };
         // Actualizar KPIs detallados
         document.getElementById('cl_k_entregados_cnt').textContent = nf(result.entregados.count);
         document.getElementById('cl_k_entregados_rev').textContent = nf(result.entregados.revenue);
@@ -6858,7 +6857,7 @@ function renderPendingGuidesSimplified() {
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PRODUCTOS:', result);
-        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${result.productosProveedor.length}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
+        alert(`DEBUG PRODUCTOS:\n\nTotal productos: ${result.totalProductos}\nProductos del proveedor: ${(Array.isArray(result.productosProveedor)?result.productosProveedor.length:0)}\nProductos públicos: ${result.productosPublicos.length}\nProductos privados: ${result.productosPrivados.length}`);
       })
       .withFailureHandler(e => {
         console.error('Error debug:', e);
@@ -6872,7 +6871,7 @@ function renderPendingGuidesSimplified() {
     apiRun
       .withSuccessHandler(result => {
         console.log('DEBUG PROVEEDOR:', result);
-        const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${result.productosProveedor.length}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
+        const msg = `DEBUG PROVEEDOR COMPLETO:\n\nUsuario: ${result.usuario.email} (${result.usuario.rol})\nTotal productos: ${result.totalProductos}\nMis productos: ${(Array.isArray(result.productosProveedor)?result.productosProveedor.length:0)}\nPedidos con mis productos: ${result.pedidosConMisProductos}\n\nMis SKUs: ${result.misSKUs.join(', ')}`;
         alert(msg);
       })
       .withFailureHandler(e => {
@@ -8772,7 +8771,7 @@ function renderPendingGuidesSimplified() {
         }
         toast(e.message || e);
       })
-      .createCommissionRequest(tok, provider, amount, note, f, t);
+      .createCommissionRequest(tok, { provider_email: provider, amount_gs: amount, note, fromISO: f, toISO: t });
   }
 
   function loadCommissionRequests(){
@@ -8841,7 +8840,6 @@ function renderPendingGuidesSimplified() {
   }
 
   function addRendidoButtonsToClosures(){
-    if (me?.role === 'DELIVERY') return;
     const rows = document.querySelectorAll('#cl_tbody tr');
     rows.forEach(tr => {
       const cells = tr.querySelectorAll('td');
@@ -8851,6 +8849,7 @@ function renderPendingGuidesSimplified() {
       const targetCell = cells[9];
       if (!targetCell || !id) return;
       if (targetCell.querySelector('.closure-rendido-btn')) return;
+      if (me?.role === 'DELIVERY') return;
       const s2Text = (targetCell.innerText || '').toUpperCase();
       const canRendir = (status1 === 'ENTREGADO' || status1 === 'ENCOMIENDA ENTREGADA') && s2Text.indexOf('RENDIDO') < 0;
       const btn = document.createElement('button');
@@ -8868,6 +8867,7 @@ function renderPendingGuidesSimplified() {
       targetCell.appendChild(document.createElement('div')).appendChild(btn);
     });
   }
+
 
   // Autoinicio
   (function boot(){
@@ -9111,22 +9111,6 @@ function renderPendingGuidesSimplified() {
       runSafe(()=>loadProvidersForRequestFilters && loadProvidersForRequestFilters());
     }
     loadDeliveryUsersIntoSelectors();
-  }
-
-  const _oldOpenCommissionsView = window.openCommissionsView;
-  if (typeof _oldOpenCommissionsView === 'function') {
-    window.openCommissionsView = function(){
-      const ret = _oldOpenCommissionsView.apply(this, arguments);
-      setTimeout(() => {
-        runSafe(()=>hydrateRoleDependentFilters());
-        runSafe(()=>loadVendorProviderBalances && loadVendorProviderBalances(
-          typeof getCurrentVendorForCommissionBalances === 'function' ? getCurrentVendorForCommissionBalances() : '',
-          byId('pc_from')?.value || '',
-          byId('pc_to')?.value || ''
-        ));
-      }, 150);
-      return ret;
-    };
   }
 
   document.addEventListener('DOMContentLoaded', function(){
